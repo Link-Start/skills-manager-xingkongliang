@@ -72,6 +72,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [setTranslatedError]);
 
+  const refreshProjects = useCallback(async () => {
+    try {
+      const p = await api.getProjects();
+      setProjects(p);
+    } catch (e) {
+      console.error("Failed to load projects:", e);
+    }
+  }, []);
+
   const refreshManagedSkills = useCallback(async () => {
     try {
       const skills = await api.getManagedSkills();
@@ -81,16 +90,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error("Failed to load managed skills:", e);
       setTranslatedError("common.skills");
     }
-  }, [setTranslatedError]);
-
-  const refreshProjects = useCallback(async () => {
-    try {
-      const p = await api.getProjects();
-      setProjects(p);
-    } catch (e) {
-      console.error("Failed to load projects:", e);
-    }
-  }, []);
+    // Managed skill changes affect project sync health badges
+    refreshProjects();
+  }, [setTranslatedError, refreshProjects]);
 
   const refreshAppData = useCallback(async () => {
     setLoading(true);
@@ -139,6 +141,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [refreshManagedSkills, refreshScenarios]);
 
+  useEffect(() => {
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const unlistenPromise = listen("app-files-changed", () => {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+      refreshTimer = setTimeout(() => {
+        refreshAppData().catch((error) => {
+          console.error("Failed to refresh after filesystem change:", error);
+        });
+      }, 500);
+    });
+
+    return () => {
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+      unlistenPromise
+        .then((unlisten) => unlisten())
+        .catch((error) => {
+          console.error("Failed to unlisten app-files-changed:", error);
+        });
+    };
+  }, [refreshAppData]);
+
   // Auto-check skill updates on startup (non-blocking, silent)
   useEffect(() => {
     if (loading || managedSkills.length === 0) return;
@@ -162,10 +190,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 action: {
                   label: i18n.t("mySkills.viewUpdates"),
                   onClick: () => {
-                    setDetailSkillId(updatable[0].id);
-                    // Navigate to my-skills page — AppProvider is outside Router,
-                    // so use pushState + popstate event for SPA navigation that
-                    // preserves React state (window.location.href would discard it).
+                    setDetailSkillId(null);
+                    // Navigate to My Skills without opening a specific detail panel.
+                    // AppProvider is outside Router, so use pushState + popstate
+                    // to preserve SPA state.
                     if (!window.location.pathname.endsWith("/my-skills")) {
                       window.history.pushState(null, "", "/my-skills");
                       window.dispatchEvent(new PopStateEvent("popstate"));

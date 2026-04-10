@@ -16,12 +16,23 @@ use crate::core::{
 };
 
 #[derive(Debug, Serialize)]
+pub struct UpdateSkillResult {
+    pub skill: ManagedSkillDto,
+    /// Whether the skill's file content actually changed.
+    /// False when a monorepo commit didn't touch this skill's subdirectory.
+    pub content_changed: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ManagedSkillDto {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
     pub source_type: String,
     pub source_ref: Option<String>,
+    pub source_ref_resolved: Option<String>,
+    pub source_subpath: Option<String>,
+    pub source_branch: Option<String>,
     pub source_revision: Option<String>,
     pub remote_revision: Option<String>,
     pub update_status: String,
@@ -54,6 +65,15 @@ pub struct SkillDocumentDto {
     pub filename: String,
     pub content: String,
     pub central_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SourceSkillDocumentDto {
+    pub skill_id: String,
+    pub filename: String,
+    pub content: String,
+    pub source_label: String,
+    pub revision: String,
 }
 
 #[derive(Debug, Clone)]
@@ -162,45 +182,133 @@ pub async fn get_skill_document(
             .map_err(AppError::db)?
             .ok_or_else(|| AppError::not_found("Skill not found"))?;
 
-        let central = PathBuf::from(&skill.central_path);
-        let candidates = [
-            "SKILL.md",
-            "skill.md",
-            "CLAUDE.md",
-            "claude.md",
-            "README.md",
-            "readme.md",
-        ];
+        let (filename, content) = read_skill_document_from_dir(Path::new(&skill.central_path))?;
 
-        for name in &candidates {
-            let path = central.join(name);
-            if path.exists() {
-                let content = std::fs::read_to_string(&path)?;
-                return Ok(SkillDocumentDto {
-                    skill_id,
-                    filename: name.to_string(),
-                    content,
-                    central_path: skill.central_path,
-                });
-            }
-        }
-
-        for e in WalkDir::new(&central).max_depth(4).into_iter().flatten() {
-            let fname = e.file_name().to_string_lossy();
-            if candidates.contains(&fname.as_ref()) {
-                let content = std::fs::read_to_string(e.path())?;
-                return Ok(SkillDocumentDto {
-                    skill_id,
-                    filename: fname.to_string(),
-                    content,
-                    central_path: skill.central_path,
-                });
-            }
-        }
-
-        Err(AppError::not_found("No documentation file found"))
+        Ok(SkillDocumentDto {
+            skill_id,
+            filename,
+            content,
+            central_path: skill.central_path,
+        })
     })
     .await?
+}
+
+#[tauri::command]
+pub async fn get_source_skill_document(
+    skill_id: String,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<SourceSkillDocumentDto, AppError> {
+    let store = store.inner().clone();
+    let proxy_url = store.proxy_url();
+    tauri::async_runtime::spawn_blocking(move || {
+        let skill = store
+            .get_skill_by_id(&skill_id)
+            .map_err(AppError::db)?
+            .ok_or_else(|| AppError::not_found("Skill not found"))?;
+
+        if matches!(skill.source_type.as_str(), "local" | "import") {
+            let source_path = skill.source_ref.as_ref().ok_or_else(|| {
+                AppError::not_found("Local skill is missing its original source path")
+            })?;
+            let source_dir = PathBuf::from(source_path);
+            if !source_dir.exists() {
+                return Err(AppError::not_found("Original source path no longer exists"));
+            }
+            let (filename, content) = read_skill_document_from_dir(&source_dir)?;
+            return Ok(SourceSkillDocumentDto {
+                skill_id,
+                filename,
+                content,
+                source_label: source_label_for_skill(&skill),
+                revision: "workspace".to_string(),
+            });
+        }
+
+        if !matches!(skill.source_type.as_str(), "git" | "skillssh") {
+            return Err(AppError::invalid_input(
+                "Skill does not support source diff preview",
+            ));
+        }
+
+        let git_source = git_source_from_skill(&skill)?;
+        git_fetcher::validate_git_url(&git_source.clone_url).map_err(AppError::git)?;
+        let remote_revision = git_fetcher::resolve_remote_revision(
+            &git_source.clone_url,
+            git_source.branch.as_deref(),
+            proxy_url.as_deref(),
+        )
+        .map_err(AppError::git)?;
+
+        let temp_dir = git_fetcher::clone_repo_ref(
+            &git_source.clone_url,
+            git_source.branch.as_deref(),
+            None,
+            proxy_url.as_deref(),
+        )
+        .map_err(AppError::classify_git_error)?;
+
+        let result = (|| -> Result<SourceSkillDocumentDto, AppError> {
+            git_fetcher::checkout_revision(&temp_dir, &remote_revision).map_err(AppError::git)?;
+            let skill_dir = resolve_skill_dir(
+                &temp_dir,
+                git_source.subpath.as_deref(),
+                git_source.locator_skill_id.as_deref(),
+            )?;
+            let (filename, content) = read_skill_document_from_dir(&skill_dir)?;
+
+            Ok(SourceSkillDocumentDto {
+                skill_id,
+                filename,
+                content,
+                source_label: source_label_for_skill(&skill),
+                revision: remote_revision,
+            })
+        })();
+
+        git_fetcher::cleanup_temp(&temp_dir);
+        result
+    })
+    .await?
+}
+
+fn read_skill_document_from_dir(dir: &Path) -> Result<(String, String), AppError> {
+    let candidates = [
+        "SKILL.md",
+        "skill.md",
+        "CLAUDE.md",
+        "claude.md",
+        "README.md",
+        "readme.md",
+    ];
+
+    for name in &candidates {
+        let path = dir.join(name);
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)?;
+            return Ok((name.to_string(), content));
+        }
+    }
+
+    for e in WalkDir::new(dir).max_depth(4).into_iter().flatten() {
+        let fname = e.file_name().to_string_lossy();
+        if candidates.contains(&fname.as_ref()) {
+            let content = std::fs::read_to_string(e.path())?;
+            return Ok((fname.to_string(), content));
+        }
+    }
+
+    Err(AppError::not_found("No documentation file found"))
+}
+
+fn source_label_for_skill(skill: &SkillRecord) -> String {
+    match skill.source_type.as_str() {
+        "skillssh" => "skills.sh".to_string(),
+        "git" => "Git".to_string(),
+        "local" => "Local".to_string(),
+        "import" => "Imported".to_string(),
+        other => other.to_string(),
+    }
 }
 
 #[tauri::command]
@@ -302,7 +410,7 @@ pub async fn install_git(
             Some(&cancel),
             proxy_url.as_deref(),
         )
-        .map_err(AppError::git_or_cancelled)?;
+        .map_err(AppError::classify_git_error)?;
 
         emit_progress("installing");
         let install_result =
@@ -370,7 +478,7 @@ pub async fn install_from_skillssh(
         let repo_url = format!("https://github.com/{}.git", source);
         let temp_dir =
             git_fetcher::clone_repo_ref(&repo_url, None, Some(&cancel), proxy_url.as_deref())
-                .map_err(AppError::git_or_cancelled)?;
+                .map_err(AppError::classify_git_error)?;
 
         emit_progress("installing");
         let install_result =
@@ -446,7 +554,7 @@ pub async fn preview_git_install(
             Some(&cancel),
             proxy_url.as_deref(),
         )
-        .map_err(AppError::git_or_cancelled)?;
+        .map_err(AppError::classify_git_error)?;
 
         let build_preview = || -> Result<GitPreviewResult, AppError> {
             let skill_dir = resolve_skill_dir(&temp_dir, parsed.subpath.as_deref(), None)?;
@@ -622,7 +730,7 @@ pub async fn update_skill(
     skill_id: String,
     store: State<'_, Arc<SkillStore>>,
     cancel_registry: State<'_, Arc<InstallCancelRegistry>>,
-) -> Result<ManagedSkillDto, AppError> {
+) -> Result<UpdateSkillResult, AppError> {
     let store = store.inner().clone();
     let proxy_url = store.proxy_url();
     let registry = cancel_registry.inner().clone();
@@ -670,48 +778,83 @@ pub async fn update_skill(
             Some(&cancel),
             proxy_url.as_deref(),
         )
-        .map_err(AppError::git_or_cancelled)?;
-        let update_result = (|| -> Result<(), AppError> {
+        .map_err(AppError::classify_git_error)?;
+        let update_result = (|| -> Result<bool, AppError> {
             git_fetcher::checkout_revision(&temp_dir, &remote_revision).map_err(AppError::git)?;
             let skill_dir = resolve_skill_dir(
                 &temp_dir,
                 git_source.subpath.as_deref(),
                 git_source.locator_skill_id.as_deref(),
             )?;
-            let staged_path = staged_path_for(&skill.central_path);
-            let install_result =
-                installer::install_skill_dir_to_destination(&skill_dir, &skill.name, &staged_path)
-                    .map_err(AppError::io)?;
-            swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
+
+            // Compare content hash before and after to detect no-op updates
+            // (e.g. monorepo commit that didn't change this skill's subdirectory).
+            let new_hash =
+                crate::core::content_hash::hash_directory(&skill_dir).map_err(AppError::io)?;
+            let content_changed = skill.content_hash.as_deref() != Some(new_hash.as_str());
 
             let source_subpath = git_fetcher::relative_subpath(&temp_dir, &skill_dir);
-            store
-                .update_skill_source_metadata(
-                    &skill.id,
-                    Some(&git_source.clone_url),
-                    source_subpath.as_deref(),
-                    git_source.branch.as_deref(),
-                    Some(&remote_revision),
-                )
-                .map_err(AppError::db)?;
-            store
-                .update_skill_after_install(
-                    &skill.id,
+
+            if content_changed {
+                let staged_path = staged_path_for(&skill.central_path);
+                let install_result = installer::install_skill_dir_to_destination(
+                    &skill_dir,
                     &skill.name,
-                    install_result.description.as_deref(),
-                    Some(&remote_revision),
-                    Some(&remote_revision),
-                    Some(&install_result.content_hash),
-                    "up_to_date",
+                    &staged_path,
                 )
-                .map_err(AppError::db)?;
-            resync_copy_targets(&store, &skill.id)?;
-            Ok(())
+                .map_err(AppError::io)?;
+                swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
+
+                store
+                    .update_skill_source_metadata(
+                        &skill.id,
+                        Some(&git_source.clone_url),
+                        source_subpath.as_deref(),
+                        git_source.branch.as_deref(),
+                        Some(&remote_revision),
+                    )
+                    .map_err(AppError::db)?;
+                store
+                    .update_skill_after_install(
+                        &skill.id,
+                        &skill.name,
+                        install_result.description.as_deref(),
+                        Some(&remote_revision),
+                        Some(&remote_revision),
+                        Some(&install_result.content_hash),
+                        "up_to_date",
+                    )
+                    .map_err(AppError::db)?;
+                resync_copy_targets(&store, &skill.id)?;
+            } else {
+                // Content identical — just update git metadata, skip file swap.
+                store
+                    .update_skill_source_metadata(
+                        &skill.id,
+                        Some(&git_source.clone_url),
+                        source_subpath.as_deref(),
+                        git_source.branch.as_deref(),
+                        Some(&remote_revision),
+                    )
+                    .map_err(AppError::db)?;
+                store
+                    .update_skill_check_state(&skill.id, Some(&remote_revision), "up_to_date", None)
+                    .map_err(AppError::db)?;
+                // Still resync copy targets — user may have locally modified/deleted them.
+                resync_copy_targets(&store, &skill.id)?;
+            }
+            Ok(content_changed)
         })();
         git_fetcher::cleanup_temp(&temp_dir);
 
         match update_result {
-            Ok(()) => managed_skill_by_id(&store, &skill_id),
+            Ok(content_changed) => {
+                let skill = managed_skill_by_id(&store, &skill_id)?;
+                Ok(UpdateSkillResult {
+                    skill,
+                    content_changed,
+                })
+            }
             Err(e) => {
                 let _ = store.update_skill_check_state(
                     &skill_id,
@@ -799,6 +942,119 @@ pub async fn reimport_local_skill(
     .await?
 }
 
+#[tauri::command]
+pub async fn relink_local_skill_source(
+    skill_id: String,
+    source_path: String,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<ManagedSkillDto, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let skill = store
+            .get_skill_by_id(&skill_id)
+            .map_err(AppError::db)?
+            .ok_or_else(|| AppError::not_found("Skill not found"))?;
+
+        if !matches!(skill.source_type.as_str(), "local" | "import") {
+            return Err(AppError::invalid_input(
+                "Only local skills can relink source paths",
+            ));
+        }
+
+        let path = PathBuf::from(&source_path);
+        if !path.exists() {
+            return Err(AppError::not_found("Selected source path does not exist"));
+        }
+        if !is_valid_skill_dir(&path) {
+            return Err(AppError::invalid_input(
+                "Selected source path is not a valid skill directory",
+            ));
+        }
+
+        store
+            .update_skill_update_status(&skill_id, "updating")
+            .map_err(AppError::db)?;
+
+        let result = (|| -> Result<(), AppError> {
+            let staged_path = staged_path_for(&skill.central_path);
+            let install_result = installer::install_from_local_to_destination(
+                &path,
+                Some(&skill.name),
+                &staged_path,
+            )
+            .map_err(AppError::io)?;
+            swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
+            store
+                .update_skill_after_reinstall(
+                    &skill.id,
+                    &skill.name,
+                    install_result.description.as_deref(),
+                    &skill.source_type,
+                    Some(&source_path),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(&install_result.content_hash),
+                    "local_only",
+                )
+                .map_err(AppError::db)?;
+            resync_copy_targets(&store, &skill.id)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => managed_skill_by_id(&store, &skill_id),
+            Err(e) => {
+                let _ = store.update_skill_check_state(&skill_id, None, "error", Some(&e.message));
+                Err(e)
+            }
+        }
+    })
+    .await?
+}
+
+#[tauri::command]
+pub async fn detach_local_skill_source(
+    skill_id: String,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<ManagedSkillDto, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let skill = store
+            .get_skill_by_id(&skill_id)
+            .map_err(AppError::db)?
+            .ok_or_else(|| AppError::not_found("Skill not found"))?;
+
+        if !matches!(skill.source_type.as_str(), "local" | "import") {
+            return Err(AppError::invalid_input(
+                "Only local skills can detach source paths",
+            ));
+        }
+
+        store
+            .update_skill_after_reinstall(
+                &skill.id,
+                &skill.name,
+                skill.description.as_deref(),
+                &skill.source_type,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                skill.content_hash.as_deref(),
+                "local_only",
+            )
+            .map_err(AppError::db)?;
+
+        managed_skill_by_id(&store, &skill_id)
+    })
+    .await?
+}
+
 fn managed_skill_to_dto(
     store: &SkillStore,
     skill: SkillRecord,
@@ -828,6 +1084,9 @@ fn managed_skill_to_dto(
         description: skill.description,
         source_type: skill.source_type,
         source_ref: skill.source_ref,
+        source_ref_resolved: skill.source_ref_resolved,
+        source_subpath: skill.source_subpath,
+        source_branch: skill.source_branch,
         source_revision: skill.source_revision,
         remote_revision: skill.remote_revision,
         update_status: skill.update_status,
@@ -997,18 +1256,13 @@ fn check_skill_update_internal(
             }
         }
         "local" | "import" => {
-            let source_exists = skill
-                .source_ref
-                .as_ref()
-                .map(|path| Path::new(path).exists())
-                .unwrap_or(false);
-            let (status, error) = if source_exists {
-                ("local_only", None)
-            } else {
-                (
+            let (status, error) = match skill.source_ref.as_deref() {
+                Some(path) if Path::new(path).exists() => ("local_only", None),
+                Some(_) => (
                     "source_missing",
                     Some("Original source path no longer exists"),
-                )
+                ),
+                None => ("local_only", None),
             };
             store
                 .update_skill_check_state(&skill.id, None, status, error)

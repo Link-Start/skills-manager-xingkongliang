@@ -374,6 +374,8 @@ pub fn run() {
                 ensure_tray_icon(app.handle())?;
             }
 
+            core::file_watcher::start_file_watcher(app.handle().clone(), store_for_setup.clone());
+
             // Intercept window close — let frontend decide (close vs hide to tray)
             // When QUITTING is set, allow the close to proceed so the process fully exits.
             let win = app.get_webview_window("main").unwrap();
@@ -403,6 +405,7 @@ pub fn run() {
             commands::skills::get_managed_skills,
             commands::skills::get_skills_for_scenario,
             commands::skills::get_skill_document,
+            commands::skills::get_source_skill_document,
             commands::skills::delete_managed_skill,
             commands::skills::install_local,
             commands::skills::install_git,
@@ -414,6 +417,8 @@ pub fn run() {
             commands::skills::check_all_skill_updates,
             commands::skills::update_skill,
             commands::skills::reimport_local_skill,
+            commands::skills::relink_local_skill_source,
+            commands::skills::detach_local_skill_source,
             commands::skills::get_all_tags,
             commands::skills::set_skill_tags,
             commands::skills::cancel_install,
@@ -455,6 +460,7 @@ pub fn run() {
             commands::projects::add_project,
             commands::projects::remove_project,
             commands::projects::scan_projects,
+            commands::projects::get_project_agent_targets,
             commands::projects::get_project_skills,
             commands::projects::get_project_skill_document,
             commands::projects::import_project_skill_to_center,

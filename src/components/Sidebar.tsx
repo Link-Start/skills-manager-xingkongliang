@@ -21,7 +21,22 @@ import { RenameScenarioDialog } from "./RenameScenarioDialog";
 import { AddProjectDialog } from "./AddProjectDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import * as api from "../lib/tauri";
+import type { SyncHealth } from "../lib/tauri";
 import { getScenarioIconOption } from "../lib/scenarioIcons";
+
+function getSyncHealthIndicator(health: SyncHealth, skillCount: number): { color: string; title: string } | null {
+  if (skillCount === 0) return null;
+  if (health.diverged > 0) return { color: "bg-red-400", title: `${health.diverged} diverged` };
+  if (health.project_newer > 0 || health.center_newer > 0) {
+    const parts: string[] = [];
+    if (health.project_newer > 0) parts.push(`${health.project_newer} project newer`);
+    if (health.center_newer > 0) parts.push(`${health.center_newer} center newer`);
+    return { color: "bg-amber-400", title: parts.join(", ") };
+  }
+  if (health.project_only > 0) return { color: "bg-blue-400", title: `${health.project_only} project only` };
+  if (health.in_sync === skillCount) return { color: "bg-emerald-400", title: "All in sync" };
+  return null;
+}
 
 export function Sidebar() {
   const { t } = useTranslation();
@@ -170,7 +185,7 @@ export function Sidebar() {
         </div>
 
         {/* Nav */}
-        <div className="px-2.5 space-y-0.5">
+        <div className="px-2.5 space-y-0.5 shrink-0">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path;
@@ -197,8 +212,10 @@ export function Sidebar() {
 
         {/* Scenarios */}
         <div className="px-2.5 flex-1 overflow-y-auto scrollbar-hide min-h-0">
-          <div className="text-[13px] font-semibold text-muted mb-1.5 px-2.5 tracking-[0.1em] uppercase">
-            {t("sidebar.scenarios")}
+          <div className="mb-1.5 px-2.5">
+            <span className="block truncate text-[12px] font-semibold tracking-[0.01em] text-muted whitespace-nowrap">
+              {t("sidebar.scenarios")}
+            </span>
           </div>
           <DragDropContext onDragEnd={handleDragEnd}>
             <Droppable droppableId="scenarios">
@@ -219,14 +236,14 @@ export function Sidebar() {
                             ref={provided.innerRef}
                             {...provided.draggableProps}
                             className={cn(
-                              "group flex items-center gap-0.5 rounded-[5px] transition-colors",
+                              "group relative flex items-center rounded-[5px] transition-colors",
                               isActive ? "bg-surface-active" : "hover:bg-surface-hover"
                             )}
                           >
                             <button
                               onClick={() => handleSwitchScenario(scenario.id)}
                               className={cn(
-                                "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-[7px] text-left text-sm outline-none",
+                                "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-[7px] text-left text-[15px] leading-5 outline-none",
                                 isActive ? "font-medium text-primary" : "text-tertiary group-hover:text-secondary"
                               )}
                             >
@@ -241,21 +258,26 @@ export function Sidebar() {
                                 <ScenarioIcon className="h-3 w-3" />
                               </span>
                               <span className="flex-1 truncate">{scenario.name}</span>
-                              {scenario.skill_count > 0 && (
-                                <span
-                                  className={cn(
-                                    "rounded-full px-1.5 text-[13px] font-medium leading-[18px]",
-                                    isActive
-                                      ? "bg-accent-bg text-accent-light"
-                                      : "bg-surface-hover text-muted group-hover:bg-surface-active"
-                                  )}
-                                >
-                                  {scenario.skill_count}
-                                </span>
-                              )}
+                              <span className="ml-auto flex h-[18px] w-[32px] shrink-0 items-center justify-end group-hover:hidden">
+                                {scenario.skill_count > 0 && (
+                                  <span
+                                    className={cn(
+                                      "min-w-[18px] rounded-full px-1.5 text-center text-[12px] font-medium leading-[18px] tabular-nums",
+                                      isActive
+                                        ? "bg-accent-bg text-accent-light"
+                                        : "bg-surface-hover text-muted"
+                                    )}
+                                  >
+                                    {scenario.skill_count}
+                                  </span>
+                                )}
+                              </span>
                             </button>
 
-                            <div className="mr-1.5 flex items-center opacity-0 transition group-hover:opacity-100">
+                            <div className={cn(
+                              "absolute right-1 flex items-center rounded-[3px] invisible opacity-0 transition-opacity group-hover:visible group-hover:opacity-100",
+                              isActive ? "bg-surface-active" : "bg-surface-hover"
+                            )}>
                               <div
                                 {...provided.dragHandleProps}
                                 className="rounded p-1 text-faint cursor-grab active:cursor-grabbing"
@@ -264,14 +286,14 @@ export function Sidebar() {
                               </div>
                               <button
                                 onClick={(event) => handleRenameClick(event, scenario)}
-                                className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-secondary"
+                                className="rounded p-1 text-faint transition hover:text-secondary"
                                 title={t("common.rename")}
                               >
                                 <Pencil className="h-3 w-3" />
                               </button>
                               <button
                                 onClick={(event) => handleDeleteClick(event, scenario)}
-                                className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-red-400"
+                                className="rounded p-1 text-faint transition hover:text-red-400"
                                 title={t("common.delete")}
                               >
                                 <Trash2 className="h-3 w-3" />
@@ -290,7 +312,7 @@ export function Sidebar() {
 
           <button
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 px-2.5 py-[7px] mt-0.5 rounded-[5px] text-[13px] text-muted hover:text-secondary hover:bg-surface-hover transition-colors w-full outline-none"
+            className="flex items-center gap-2 px-2.5 py-[7px] mt-1 rounded-[5px] text-[13px] text-muted hover:text-secondary hover:bg-surface-hover transition-colors w-full outline-none"
           >
             <Plus className="w-3.5 h-3.5" />
             {t("sidebar.newScenario")}
@@ -300,8 +322,10 @@ export function Sidebar() {
           <div className="mx-0.5 mt-3.5 mb-2.5 border-t border-border-subtle" />
 
           {/* Projects */}
-          <div className="text-[13px] font-semibold text-muted mb-1.5 px-2.5 tracking-[0.1em] uppercase">
-            {t("sidebar.projects")}
+          <div className="mb-1.5 px-2.5">
+            <span className="block truncate text-[12px] font-semibold tracking-[0.01em] text-muted whitespace-nowrap">
+              {t("sidebar.projects")}
+            </span>
           </div>
           <DragDropContext onDragEnd={handleProjectDragEnd}>
             <Droppable droppableId="projects">
@@ -313,6 +337,7 @@ export function Sidebar() {
                 >
                   {orderedProjects.map((project, index) => {
                     const isActive = location.pathname === `/project/${project.id}`;
+                    const healthIndicator = getSyncHealthIndicator(project.sync_health, project.skill_count);
                     return (
                       <Draggable key={project.id} draggableId={project.id} index={index}>
                         {(provided) => (
@@ -320,14 +345,14 @@ export function Sidebar() {
                             ref={provided.innerRef}
                             {...provided.draggableProps}
                             className={cn(
-                              "group flex items-center gap-0.5 rounded-[5px] transition-colors",
+                              "group relative flex items-center rounded-[5px] transition-colors",
                               isActive ? "bg-surface-active" : "hover:bg-surface-hover"
                             )}
                           >
                             <button
                               onClick={() => navigate(`/project/${project.id}`)}
                               className={cn(
-                                "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-[7px] text-left text-sm outline-none",
+                                "flex min-w-0 flex-1 items-center gap-2 px-2.5 py-[7px] text-left text-[15px] leading-5 outline-none",
                                 isActive ? "font-medium text-primary" : "text-tertiary group-hover:text-secondary"
                               )}
                             >
@@ -342,21 +367,32 @@ export function Sidebar() {
                                 <FolderOpen className="h-3 w-3" />
                               </span>
                               <span className="flex-1 truncate">{project.name}</span>
-                              {project.skill_count > 0 && (
-                                <span
-                                  className={cn(
-                                    "rounded-full px-1.5 text-[13px] font-medium leading-[18px]",
-                                    isActive
-                                      ? "bg-accent-bg text-accent-light"
-                                      : "bg-surface-hover text-muted group-hover:bg-surface-active"
-                                  )}
-                                >
-                                  {project.skill_count}
-                                </span>
-                              )}
+                              <span className="ml-auto flex h-[18px] w-[52px] shrink-0 items-center justify-end gap-2 group-hover:hidden">
+                                {healthIndicator && (
+                                  <span
+                                    className={cn("h-1.5 w-1.5 shrink-0 rounded-full", healthIndicator.color)}
+                                    title={healthIndicator.title}
+                                  />
+                                )}
+                                {project.skill_count > 0 && (
+                                  <span
+                                    className={cn(
+                                      "min-w-[24px] rounded-full px-1.5 text-center text-[12px] font-medium leading-[18px] tabular-nums",
+                                      isActive
+                                        ? "bg-accent-bg text-accent-light"
+                                        : "bg-surface-hover text-muted"
+                                    )}
+                                  >
+                                    {project.skill_count}
+                                  </span>
+                                )}
+                              </span>
                             </button>
 
-                            <div className="mr-1.5 flex items-center opacity-0 transition group-hover:opacity-100">
+                            <div className={cn(
+                              "absolute right-1 flex items-center rounded-[3px] invisible opacity-0 transition-opacity group-hover:visible group-hover:opacity-100",
+                              isActive ? "bg-surface-active" : "bg-surface-hover"
+                            )}>
                               <div
                                 {...provided.dragHandleProps}
                                 className="rounded p-1 text-faint cursor-grab active:cursor-grabbing"
@@ -369,7 +405,7 @@ export function Sidebar() {
                                   e.stopPropagation();
                                   setDeleteProjectTarget(project);
                                 }}
-                                className="rounded p-1 text-faint transition hover:bg-surface-hover hover:text-red-400"
+                                className="rounded p-1 text-faint transition hover:text-red-400"
                                 title={t("common.delete")}
                               >
                                 <Trash2 className="h-3 w-3" />
@@ -388,7 +424,7 @@ export function Sidebar() {
 
           <button
             onClick={() => setShowAddProject(true)}
-            className="flex items-center gap-2 px-2.5 py-[7px] mt-0.5 rounded-[5px] text-[13px] text-muted hover:text-secondary hover:bg-surface-hover transition-colors w-full outline-none"
+            className="flex items-center gap-2 px-2.5 py-[7px] mt-1 rounded-[5px] text-[13px] text-muted hover:text-secondary hover:bg-surface-hover transition-colors w-full outline-none"
           >
             <Plus className="w-3.5 h-3.5" />
             {t("sidebar.addProject")}
