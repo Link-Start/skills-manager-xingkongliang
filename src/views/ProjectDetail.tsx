@@ -39,6 +39,7 @@ interface ProjectSkillGroup {
   id: string;
   name: string;
   dir_name: string;
+  relative_path: string;
   description: string | null;
   files: string[];
   variants: ProjectSkill[];
@@ -168,8 +169,9 @@ export function ProjectDetail() {
   useEffect(() => {
     let cancelled = false;
     const loadProjectAgentTargets = async () => {
+      if (!id) return;
       try {
-        const result = await api.getProjectAgentTargets();
+        const result = await api.getProjectAgentTargets(id);
         if (!cancelled) {
           setProjectAgentTargets(result);
         }
@@ -181,7 +183,7 @@ export function ProjectDetail() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [id]);
 
   useEffect(() => {
     if (!project && !loading) {
@@ -192,7 +194,7 @@ export function ProjectDetail() {
   const groupedSkills = useMemo<ProjectSkillGroup[]>(() => {
     const groups = new Map<string, ProjectSkillGroup>();
     for (const skill of skills) {
-      const key = skill.dir_name.toLowerCase();
+      const key = skill.relative_path.toLowerCase();
       const existing = groups.get(key);
       if (existing) {
         existing.variants.push(skill);
@@ -208,6 +210,7 @@ export function ProjectDetail() {
         id: key,
         name: skill.name,
         dir_name: skill.dir_name,
+        relative_path: skill.relative_path,
         description: skill.description,
         files: [...skill.files],
         variants: [skill],
@@ -265,7 +268,7 @@ export function ProjectDetail() {
       if (!map[skill.agent]) {
         map[skill.agent] = [];
       }
-      map[skill.agent].push(skill.dir_name.toLowerCase());
+      map[skill.agent].push(skill.relative_path.toLowerCase());
     }
     return map;
   }, [skills]);
@@ -293,11 +296,11 @@ export function ProjectDetail() {
     setDetailSkill(skill);
     setDocContent(null);
     setDocLoading(true);
-    if (!project) return;
+    if (!project || !id) return;
     try {
       const doc = await api.getProjectSkillDocument(
-        project.path,
-        skill.primaryVariant.dir_name,
+        id,
+        skill.primaryVariant.relative_path,
         skill.primaryVariant.agent
       );
       setDocContent(doc.content);
@@ -312,7 +315,7 @@ export function ProjectDetail() {
     if (!id) return;
     setUpdatingCenterSkill(getSkillKey(skill));
     try {
-      await api.updateProjectSkillToCenter(id, skill.primaryVariant.dir_name, skill.primaryVariant.agent);
+      await api.updateProjectSkillToCenter(id, skill.primaryVariant.relative_path, skill.primaryVariant.agent);
       toast.success(t("project.updateCenterSuccess", { name: skill.name }));
       await Promise.all([refreshManagedSkills(), refreshScenarios(), loadSkills()]);
     } catch (error: unknown) {
@@ -328,7 +331,7 @@ export function ProjectDetail() {
     try {
       await Promise.all(
         skill.variants.map((variant) =>
-          api.updateProjectSkillFromCenter(id, variant.dir_name, variant.agent)
+          api.updateProjectSkillFromCenter(id, variant.relative_path, variant.agent)
         )
       );
       if (skill.status === "project_newer") {
@@ -351,7 +354,7 @@ export function ProjectDetail() {
       const nextEnabled = skill.enabledCount !== skill.totalCount;
       await Promise.all(
         skill.variants.map((variant) =>
-          api.toggleProjectSkill(id, variant.dir_name, variant.agent, nextEnabled)
+          api.toggleProjectSkill(id, variant.relative_path, variant.agent, nextEnabled)
         )
       );
       if (skill.enabledCount === skill.totalCount) {
@@ -420,7 +423,7 @@ export function ProjectDetail() {
     try {
       await Promise.all(
         deleteTarget.variants.map((variant) =>
-          api.deleteProjectSkill(id, variant.dir_name, variant.agent)
+          api.deleteProjectSkill(id, variant.relative_path, variant.agent)
         )
       );
       toast.success(t("project.skillDeleted", { name: deleteTarget.name }));
@@ -439,7 +442,7 @@ export function ProjectDetail() {
       try {
         await Promise.all(
           skill.variants.map((variant) =>
-            api.deleteProjectSkill(id, variant.dir_name, variant.agent)
+            api.deleteProjectSkill(id, variant.relative_path, variant.agent)
           )
         );
         deleted++;
@@ -470,14 +473,14 @@ export function ProjectDetail() {
         if (enabling && skill.enabledCount !== skill.totalCount) {
           await Promise.all(
             skill.variants.map((variant) =>
-              api.toggleProjectSkill(id, variant.dir_name, variant.agent, true)
+              api.toggleProjectSkill(id, variant.relative_path, variant.agent, true)
             )
           );
           count++;
         } else if (!enabling && skill.enabledCount > 0) {
           await Promise.all(
             skill.variants.map((variant) =>
-              api.toggleProjectSkill(id, variant.dir_name, variant.agent, false)
+              api.toggleProjectSkill(id, variant.relative_path, variant.agent, false)
             )
           );
           count++;
@@ -513,7 +516,7 @@ export function ProjectDetail() {
           {groupedSkills.length > 0 && ` \u00B7 ${enabledCount} / ${groupedSkills.length} ${t("project.enabled")}`}
         </p>
         <p className="mt-1 text-[13px] text-muted">
-          {t("project.workspaceHint")}
+          {project.workspace_type === "linked" ? t("project.linkedWorkspaceHint") : t("project.workspaceHint")}
         </p>
       </div>
 
@@ -598,7 +601,7 @@ export function ProjectDetail() {
           selectedCount={selectedIds.size}
           isAllSelected={isAllSelected}
           anyDisabled={anyDisabled}
-          showToggle={true}
+          showToggle={project.supports_skill_toggle}
           labels={{
             hint: t("project.selectHint"),
             selected: t("project.selectedCount", { count: selectedIds.size }),
@@ -751,24 +754,26 @@ export function ProjectDetail() {
                             )}
                           </button>
                         )}
-                        <button
-                          onClick={() => handleToggleSkill(skill)}
-                          disabled={isToggling}
-                          className={cn(
-                            "rounded px-2 py-1 text-[13px] font-medium transition-colors outline-none",
-                            skill.enabledCount > 0
-                              ? "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
-                              : "text-muted hover:bg-surface-hover hover:text-secondary"
-                          )}
-                        >
-                          {isToggling ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : skill.enabledCount === skill.totalCount ? (
-                            t("project.enabled")
-                          ) : (
-                            t("project.enableSkill")
-                          )}
-                        </button>
+                        {project.supports_skill_toggle ? (
+                          <button
+                            onClick={() => handleToggleSkill(skill)}
+                            disabled={isToggling}
+                            className={cn(
+                              "rounded px-2 py-1 text-[13px] font-medium transition-colors outline-none",
+                              skill.enabledCount > 0
+                                ? "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
+                                : "text-muted hover:bg-surface-hover hover:text-secondary"
+                            )}
+                          >
+                            {isToggling ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : skill.enabledCount === skill.totalCount ? (
+                              t("project.enabled")
+                            ) : (
+                              t("project.enableSkill")
+                            )}
+                          </button>
+                        ) : null}
                         <button
                           onClick={() => setDeleteTarget(skill)}
                           className="rounded px-2 py-1 text-muted transition-colors outline-none opacity-0 group-hover:opacity-100 hover:bg-red-500/10 hover:text-red-500"
@@ -872,24 +877,26 @@ export function ProjectDetail() {
                         )}
                       </button>
                     )}
-                    <button
-                      onClick={() => handleToggleSkill(skill)}
-                      disabled={isToggling}
-                      className={cn(
-                        "rounded px-2 py-0.5 text-[13px] font-medium transition-colors outline-none",
-                        skill.enabledCount > 0
-                          ? "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
-                          : "text-muted hover:bg-surface-hover hover:text-secondary"
-                      )}
-                    >
-                      {isToggling ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : skill.enabledCount === skill.totalCount ? (
-                        t("project.enabled")
-                      ) : (
-                        t("project.enableSkill")
-                      )}
-                    </button>
+                    {project.supports_skill_toggle ? (
+                      <button
+                        onClick={() => handleToggleSkill(skill)}
+                        disabled={isToggling}
+                        className={cn(
+                          "rounded px-2 py-0.5 text-[13px] font-medium transition-colors outline-none",
+                          skill.enabledCount > 0
+                            ? "text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/10"
+                            : "text-muted hover:bg-surface-hover hover:text-secondary"
+                        )}
+                      >
+                        {isToggling ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : skill.enabledCount === skill.totalCount ? (
+                          t("project.enabled")
+                        ) : (
+                          t("project.enableSkill")
+                        )}
+                      </button>
+                    ) : null}
                     <button
                       onClick={() => setDeleteTarget(skill)}
                       className="rounded p-0.5 text-muted transition-colors hover:bg-red-500/10 hover:text-red-500"
