@@ -143,6 +143,7 @@ export interface ProjectSkill {
   enabled: boolean;
   agent: string;
   agent_display_name: string;
+  tags: string[];
   in_center: boolean;
   sync_status: "project_only" | "in_sync" | "project_newer" | "center_newer" | "diverged";
   center_skill_id: string | null;
@@ -262,6 +263,15 @@ export interface UpdateSkillResult {
 export const updateSkill = (skillId: string) =>
   invoke<UpdateSkillResult>("update_skill", { skillId });
 
+export interface BatchUpdateSkillsResult {
+  refreshed: number;
+  unchanged: number;
+  failed: string[];
+}
+
+export const batchUpdateSkills = (skillIds: string[]) =>
+  invoke<BatchUpdateSkillsResult>("batch_update_skills", { skillIds });
+
 export const reimportLocalSkill = (skillId: string) =>
   invoke<ManagedSkill>("reimport_local_skill", { skillId });
 
@@ -348,6 +358,12 @@ export const setSettings = (key: string, value: string) =>
 
 export const getCentralRepoPath = () =>
   invoke<string>("get_central_repo_path");
+
+export const getCentralRepoPathOverride = () =>
+  invoke<string | null>("get_central_repo_path_override");
+
+export const setCentralRepoPath = (path?: string | null) =>
+  invoke<string>("set_central_repo_path", { path: path ?? null });
 
 export const appExit = () => invoke<void>("app_exit");
 

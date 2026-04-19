@@ -3,9 +3,45 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
-use crate::core::{
-    central_repo, error::AppError, installer, scanner, skill_store::SkillStore, tool_adapters,
-};
+use crate::core::{error::AppError, installer, scanner, skill_store::SkillStore, tool_adapters};
+
+fn canonicalize_lossy(path: &str) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path))
+}
+
+fn match_imported_skill_id(
+    rec: &crate::core::skill_store::DiscoveredSkillRecord,
+    managed_skills: &[crate::core::skill_store::SkillRecord],
+) -> Option<String> {
+    let found_path = canonicalize_lossy(&rec.found_path);
+    if let Some(existing) = managed_skills.iter().find(|skill| {
+        skill
+            .source_ref
+            .as_deref()
+            .map(canonicalize_lossy)
+            .as_ref()
+            == Some(&found_path)
+            || skill
+                .source_ref_resolved
+                .as_deref()
+                .map(canonicalize_lossy)
+                .as_ref()
+                == Some(&found_path)
+    }) {
+        return Some(existing.id.clone());
+    }
+
+    if let Some(fingerprint) = rec.fingerprint.as_deref() {
+        if let Some(existing) = managed_skills
+            .iter()
+            .find(|skill| skill.content_hash.as_deref() == Some(fingerprint))
+        {
+            return Some(existing.id.clone());
+        }
+    }
+
+    None
+}
 
 #[derive(Debug, Serialize)]
 pub struct ScanResultDto {
@@ -30,11 +66,7 @@ pub async fn scan_local_skills(
             .map_err(AppError::io)?;
 
         for rec in &mut plan.discovered {
-            if let Some(name) = rec.name_guess.as_deref() {
-                if let Some(existing) = managed_skills.iter().find(|skill| skill.name == name) {
-                    rec.imported_skill_id = Some(existing.id.clone());
-                }
-            }
+            rec.imported_skill_id = match_imported_skill_id(rec, &managed_skills);
         }
 
         // Clear and repopulate discovered
@@ -66,10 +98,12 @@ pub async fn import_existing_skill(
         let path = PathBuf::from(&source_path);
         let resolved_name =
             installer::resolve_local_skill_name(&path, name.as_deref()).map_err(AppError::io)?;
-        let central_path = central_repo::skills_dir().join(&resolved_name);
+
+        let result =
+            installer::install_from_local(&path, Some(&resolved_name)).map_err(AppError::io)?;
 
         if let Some(existing) = store
-            .get_skill_by_central_path(&central_path.to_string_lossy())
+            .get_skill_by_central_path(&result.central_path.to_string_lossy())
             .map_err(AppError::db)?
         {
             if let Ok(Some(scenario_id)) = store.get_active_scenario_id() {
@@ -79,13 +113,6 @@ pub async fn import_existing_skill(
             }
             return Ok(());
         }
-
-        let result = installer::install_from_local_to_destination(
-            &path,
-            Some(&resolved_name),
-            &central_path,
-        )
-        .map_err(AppError::io)?;
 
         let now = chrono::Utc::now().timestamp_millis();
         let id = uuid::Uuid::new_v4().to_string();
@@ -141,22 +168,17 @@ pub async fn import_all_discovered(store: State<'_, Arc<SkillStore>>) -> Result<
             }
             if let Some(first) = group.locations.first() {
                 let path = PathBuf::from(&first.found_path);
-                let central_path = central_repo::skills_dir().join(&group.name);
 
-                if let Ok(Some(existing)) =
-                    store.get_skill_by_central_path(&central_path.to_string_lossy())
-                {
-                    if let Some(ref scenario_id) = active_scenario {
-                        store.add_skill_to_scenario(scenario_id, &existing.id).ok();
+                if let Ok(result) = installer::install_from_local(&path, Some(&group.name)) {
+                    if let Ok(Some(existing)) =
+                        store.get_skill_by_central_path(&result.central_path.to_string_lossy())
+                    {
+                        if let Some(ref scenario_id) = active_scenario {
+                            store.add_skill_to_scenario(scenario_id, &existing.id).ok();
+                        }
+                        continue;
                     }
-                    continue;
-                }
 
-                if let Ok(result) = installer::install_from_local_to_destination(
-                    &path,
-                    Some(&group.name),
-                    &central_path,
-                ) {
                     let now = chrono::Utc::now().timestamp_millis();
                     let id = uuid::Uuid::new_v4().to_string();
                     let record = crate::core::skill_store::SkillRecord {
@@ -192,4 +214,100 @@ pub async fn import_all_discovered(store: State<'_, Arc<SkillStore>>) -> Result<
         Ok(())
     })
     .await?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::match_imported_skill_id;
+    use crate::core::skill_store::{DiscoveredSkillRecord, SkillRecord};
+
+    fn managed_skill(
+        id: &str,
+        name: &str,
+        source_ref: Option<&str>,
+        source_ref_resolved: Option<&str>,
+        content_hash: Option<&str>,
+    ) -> SkillRecord {
+        SkillRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            description: None,
+            source_type: "import".to_string(),
+            source_ref: source_ref.map(str::to_string),
+            source_ref_resolved: source_ref_resolved.map(str::to_string),
+            source_subpath: None,
+            source_branch: None,
+            source_revision: None,
+            remote_revision: None,
+            central_path: format!("/central/{name}"),
+            content_hash: content_hash.map(str::to_string),
+            enabled: true,
+            created_at: 0,
+            updated_at: 0,
+            status: "ok".to_string(),
+            update_status: "local_only".to_string(),
+            last_checked_at: None,
+            last_check_error: None,
+        }
+    }
+
+    fn discovered(path: &str, name: &str, fingerprint: Option<&str>) -> DiscoveredSkillRecord {
+        DiscoveredSkillRecord {
+            id: "discovered-1".to_string(),
+            tool: "cursor".to_string(),
+            found_path: path.to_string(),
+            name_guess: Some(name.to_string()),
+            fingerprint: fingerprint.map(str::to_string),
+            found_at: 0,
+            imported_skill_id: None,
+        }
+    }
+
+    #[test]
+    fn does_not_mark_same_name_as_imported_without_path_or_hash_match() {
+        let rec = discovered("/tmp/local/foo", "same-name", None);
+        let managed = vec![managed_skill(
+            "skill-1",
+            "same-name",
+            Some("/tmp/other/foo"),
+            None,
+            None,
+        )];
+
+        assert_eq!(match_imported_skill_id(&rec, &managed), None);
+    }
+
+    #[test]
+    fn marks_same_fingerprint_as_imported() {
+        let rec = discovered("/tmp/local/foo", "same-name", Some("abc123"));
+        let managed = vec![managed_skill(
+            "skill-1",
+            "different-name",
+            Some("/tmp/other/foo"),
+            None,
+            Some("abc123"),
+        )];
+
+        assert_eq!(
+            match_imported_skill_id(&rec, &managed),
+            Some("skill-1".to_string())
+        );
+    }
+
+    #[test]
+    fn marks_same_source_path_as_imported() {
+        let rec = discovered("/tmp/local/foo", "same-name", None);
+        let managed = vec![managed_skill(
+            "skill-1",
+            "different-name",
+            Some("/tmp/local/foo"),
+            None,
+            None,
+        )];
+
+        assert_eq!(
+            match_imported_skill_id(&rec, &managed),
+            Some("skill-1".to_string())
+        );
+    }
 }

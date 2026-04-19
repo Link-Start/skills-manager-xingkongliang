@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.1] - 2026-04-18
+
+### Added
+- Command palette for quick navigation and actions
+- Per-agent sync status indicators to see which agents need syncing
+- Bulk tag editing for skills to organize skills faster
+- Agent toggle in project detail panel for quick agent assignment
+- Skill detail panel with local/diff/center tabs to compare skill versions
+- Agent dots and tags displayed in skill detail panel
+
+### Changed
+- Improved project workspace skill management with better organization
+- Skill detail panel now fully scrollable with a persistent close button
+
+### Fixed
+- Removed agent assignment count label from project skill cards for a cleaner look
+
+### Removed
+- No removals in this release
+## [1.14.0] - 2026-04-18
+
+### Added
+- Bulk skill update actions to update multiple installed skills in one step
+- Custom central repository path support for users who keep their managed skills outside the default location
+
+### Changed
+- Refined Settings form controls for a cleaner and more consistent configuration experience
+
+### Fixed
+- Deduplicated startup skill update notifications to avoid repeated alerts for the same update
+- Updated Antigravity path defaults so installs and sync use the correct skills directory
+- Tightened Claude Code skill discovery and import matching to avoid false positives from plugin marketplace caches and mismatched same-name skills
+
+### Removed
+- No removals in this release
 ## [1.13.3] - 2026-04-11
 
 ### Changed

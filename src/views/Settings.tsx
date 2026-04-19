@@ -85,6 +85,10 @@ export function Settings() {
   const [openingRepo, setOpeningRepo] = useState(false);
   const [openingGithub, setOpeningGithub] = useState(false);
   const [centralRepoPath, setCentralRepoPath] = useState("");
+  const [centralRepoPathOverride, setCentralRepoPathOverride] = useState<string | null>(null);
+  const [editingCentralRepoPath, setEditingCentralRepoPath] = useState(false);
+  const [centralRepoPathInput, setCentralRepoPathInput] = useState("");
+  const [savingCentralRepoPath, setSavingCentralRepoPath] = useState(false);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
   const [installing, setInstalling] = useState(false);
@@ -205,7 +209,11 @@ export function Settings() {
     });
     api.getSettings("text_size").then((v) => { if (v) { setTextSize(v); applyTextSize(v); } });
     api.getSettings("skillsmp_api_key").then((v) => { if (v) setSkillsmpApiKey(v); });
-    api.getCentralRepoPath().then(setCentralRepoPath).catch(() => {});
+    api.getCentralRepoPath().then((path) => {
+      setCentralRepoPath(path);
+      setCentralRepoPathInput(path);
+    }).catch(() => {});
+    api.getCentralRepoPathOverride().then(setCentralRepoPathOverride).catch(() => {});
 
     (async () => {
       const savedRemote = (await api.getSettings("git_backup_remote_url").catch(() => null))?.trim() || "";
@@ -306,6 +314,49 @@ export function Settings() {
     }
   };
 
+  const handleStartEditCentralRepoPath = () => {
+    setCentralRepoPathInput(centralRepoPathOverride ?? centralRepoPath);
+    setEditingCentralRepoPath(true);
+  };
+
+  const handleSaveCentralRepoPath = async () => {
+    const trimmed = centralRepoPathInput.trim();
+    if (!trimmed) {
+      toast.error(t("settings.repoPathEmpty"));
+      return;
+    }
+    setSavingCentralRepoPath(true);
+    try {
+      const nextPath = await api.setCentralRepoPath(trimmed);
+      setCentralRepoPath(nextPath);
+      setCentralRepoPathOverride(nextPath);
+      setEditingCentralRepoPath(false);
+      toast.success(t("settings.repoPathSaved"));
+      toast.info(t("settings.repoPathRestartNotice"));
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      setSavingCentralRepoPath(false);
+    }
+  };
+
+  const handleResetCentralRepoPath = async () => {
+    setSavingCentralRepoPath(true);
+    try {
+      const nextPath = await api.setCentralRepoPath(null);
+      setCentralRepoPath(nextPath);
+      setCentralRepoPathOverride(null);
+      setCentralRepoPathInput(nextPath);
+      setEditingCentralRepoPath(false);
+      toast.success(t("settings.repoPathReset"));
+      toast.info(t("settings.repoPathRestartNotice"));
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      setSavingCentralRepoPath(false);
+    }
+  };
+
   const handleOpenGithub = async () => {
     try {
       setOpeningGithub(true);
@@ -400,6 +451,7 @@ export function Settings() {
 
   const fieldClass =
     "h-8 rounded-[4px] border border-border-subtle bg-background px-2.5 text-[13px] text-secondary outline-none transition-colors focus:border-border";
+  const selectClass = `${fieldClass} min-w-[180px] appearance-none pr-8`;
   const actionButtonClass =
     "inline-flex h-8 items-center gap-1.5 rounded-[4px] border px-2.5 text-[13px] font-medium transition-colors outline-none disabled:opacity-60";
   const segmentedButtonClass =
@@ -438,7 +490,7 @@ export function Settings() {
   );
   const displayedRepoPath = centralRepoPath
     ? compactHomePath(centralRepoPath)
-    : "~/.skills-manager/";
+    : t("common.loading");
 
   const renderAgentCard = (agent: typeof tools[number]) => (
     <div
@@ -616,13 +668,6 @@ export function Settings() {
               <h2 className="app-section-title">
                 {t("settings.supportedAgents")} ({installedTools.length}/{tools.length})
               </h2>
-              <p className="mt-1 text-[13px] text-muted">
-                {t("settings.agentsSummary", {
-                  detected: installedTools.length,
-                  enabled: enabledTools.length,
-                  custom: customTools.length,
-                })}
-              </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <button
@@ -659,19 +704,10 @@ export function Settings() {
             </div>
           </div>
 
-          <div className="mb-3 flex flex-wrap gap-2">
-            <div className="rounded-[6px] border border-border-subtle bg-surface px-3 py-1.5">
-              <div className="text-[11px] text-muted">{t("settings.detectedAgents")}</div>
-              <div className="text-[15px] font-semibold text-secondary">{installedTools.length}</div>
-            </div>
-            <div className="rounded-[6px] border border-border-subtle bg-surface px-3 py-1.5">
-              <div className="text-[11px] text-muted">{t("settings.enabledAgents")}</div>
-              <div className="text-[15px] font-semibold text-secondary">{enabledTools.length}</div>
-            </div>
-            <div className="rounded-[6px] border border-border-subtle bg-surface px-3 py-1.5">
-              <div className="text-[11px] text-muted">{t("settings.customAgents")}</div>
-              <div className="text-[15px] font-semibold text-secondary">{customTools.length}</div>
-            </div>
+          <div className="mb-3 flex flex-wrap items-center gap-3 text-[13px] text-muted">
+            <span>{t("settings.detectedAgents")} <span className="font-medium text-secondary">{installedTools.length}</span></span>
+            <span>{t("settings.enabledAgents")} <span className="font-medium text-secondary">{enabledTools.length}</span></span>
+            <span>{t("settings.customAgents")} <span className="font-medium text-secondary">{customTools.length}</span></span>
           </div>
 
           {/* Add custom agent form */}
@@ -796,10 +832,87 @@ export function Settings() {
                 <p className="text-[13px] text-muted">{t("settings.repoPathDesc")}</p>
               </div>
               <div className="flex max-w-full flex-wrap items-center gap-2">
-                <div className="flex min-w-0 items-center gap-1.5 rounded-[4px] border border-border-subtle bg-background px-2 py-1">
-                  <Folder className="w-3 h-3 text-muted" />
-                  <span className="truncate text-[13px] font-mono text-tertiary">{displayedRepoPath}</span>
-                </div>
+                {editingCentralRepoPath ? (
+                  <div className="flex min-w-[320px] max-w-full items-center gap-1">
+                    <input
+                      type="text"
+                      value={centralRepoPathInput}
+                      onChange={(e) => setCentralRepoPathInput(e.target.value)}
+                      className="h-8 min-w-0 flex-1 rounded-[4px] border border-border-subtle bg-background px-2.5 text-[13px] font-mono text-secondary outline-none transition-colors focus:border-border"
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void handleSaveCentralRepoPath();
+                        if (e.key === "Escape") {
+                          setCentralRepoPathInput(centralRepoPathOverride ?? centralRepoPath);
+                          setEditingCentralRepoPath(false);
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleBrowsePath(setCentralRepoPathInput)}
+                      disabled={savingCentralRepoPath}
+                      className="inline-flex h-8 items-center gap-1 rounded-[4px] border border-border-subtle px-2.5 text-[13px] font-medium text-muted transition-colors outline-none hover:text-secondary disabled:opacity-60"
+                    >
+                      <FolderOpen className="w-3 h-3" />
+                      {t("settings.selectFolder")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveCentralRepoPath()}
+                      disabled={savingCentralRepoPath}
+                      className="inline-flex h-8 items-center gap-1 rounded-[4px] border border-emerald-500/30 px-2.5 text-[13px] font-medium text-emerald-600 transition-colors outline-none hover:bg-emerald-500/5 disabled:opacity-60"
+                    >
+                      {savingCentralRepoPath ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Check className="w-3 h-3" />
+                      )}
+                      {t("common.save")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCentralRepoPathInput(centralRepoPathOverride ?? centralRepoPath);
+                        setEditingCentralRepoPath(false);
+                      }}
+                      disabled={savingCentralRepoPath}
+                      className="inline-flex h-8 items-center gap-1 rounded-[4px] border border-border-subtle px-2.5 text-[13px] font-medium text-muted transition-colors outline-none hover:text-secondary disabled:opacity-60"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex min-w-0 items-center gap-1.5 rounded-[4px] border border-border-subtle bg-background px-2 py-1">
+                    <Folder className="w-3 h-3 text-muted" />
+                    <span className="truncate text-[13px] font-mono text-tertiary">{displayedRepoPath}</span>
+                  </div>
+                )}
+                {!editingCentralRepoPath && (
+                  <button
+                    type="button"
+                    onClick={handleStartEditCentralRepoPath}
+                    className="inline-flex h-8 items-center gap-1 rounded-[4px] border border-border-subtle px-2.5 text-[13px] font-medium text-muted transition-colors outline-none hover:text-secondary"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    {t("settings.changeDir")}
+                  </button>
+                )}
+                {!editingCentralRepoPath && centralRepoPathOverride && (
+                  <button
+                    type="button"
+                    onClick={() => void handleResetCentralRepoPath()}
+                    disabled={savingCentralRepoPath}
+                    className="inline-flex h-8 items-center gap-1 rounded-[4px] border border-border-subtle px-2.5 text-[13px] font-medium text-muted transition-colors outline-none hover:text-secondary disabled:opacity-60"
+                  >
+                    {savingCentralRepoPath ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <RotateCcw className="w-3 h-3" />
+                    )}
+                    {t("settings.resetPath")}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleOpenRepoInFinder}
@@ -818,6 +931,11 @@ export function Settings() {
                   )}
                   {t("settings.openInFinder")}
                 </button>
+              </div>
+              <div className="w-full text-[12px] text-muted">
+                {centralRepoPathOverride
+                  ? t("settings.repoPathCustomHint")
+                  : t("settings.repoPathDefaultHint")}
               </div>
             </div>
 
@@ -911,16 +1029,19 @@ export function Settings() {
                 <h3 className="text-[13px] text-secondary font-medium mb-0.5">{t("settings.defaultScenario")}</h3>
                 <p className="text-[13px] text-muted">{t("settings.defaultScenarioDesc")}</p>
               </div>
-              <select
-                value={defaultScenario}
-                onChange={(e) => handleDefaultScenarioChange(e.target.value)}
-                className={fieldClass}
-              >
-                <option value="">—</option>
-                {scenarios.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
+              <div className="relative shrink-0">
+                <select
+                  value={defaultScenario}
+                  onChange={(e) => handleDefaultScenarioChange(e.target.value)}
+                  className={selectClass}
+                >
+                  <option value="">—</option>
+                  {scenarios.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+              </div>
             </div>
 
             {/* Language */}
@@ -930,15 +1051,18 @@ export function Settings() {
               </div>
               <div className="flex max-w-full flex-wrap items-center gap-2">
                 <Globe className="w-3.5 h-3.5 text-muted" />
-                <select
-                  value={i18n.language}
-                  onChange={(e) => handleLanguageChange(e.target.value)}
-                  className={fieldClass}
-                >
-                  <option value="zh">简体中文 (zh-CN)</option>
-                  <option value="zh-TW">繁體中文 (zh-TW)</option>
-                  <option value="en">English (en-US)</option>
-                </select>
+                <div className="relative">
+                  <select
+                    value={i18n.language}
+                    onChange={(e) => handleLanguageChange(e.target.value)}
+                    className={selectClass}
+                  >
+                    <option value="zh">简体中文 (zh-CN)</option>
+                    <option value="zh-TW">繁體中文 (zh-TW)</option>
+                    <option value="en">English (en-US)</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted" />
+                </div>
               </div>
             </div>
 
