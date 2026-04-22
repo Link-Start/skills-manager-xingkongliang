@@ -1210,6 +1210,14 @@ fn store_installed_skill(
             store
                 .add_skill_to_scenario(scenario_id, &existing.id)
                 .map_err(AppError::db)?;
+
+            if let Err(e) = super::scenarios::sync_skill_to_active_scenario(
+                store,
+                scenario_id,
+                &existing.id,
+            ) {
+                log::warn!("Failed to sync reinstalled skill to scenario: {e}");
+            }
         }
 
         return Ok(existing.id);
@@ -1245,6 +1253,14 @@ fn store_installed_skill(
         store
             .add_skill_to_scenario(scenario_id, &id)
             .map_err(AppError::db)?;
+
+        if let Err(e) = super::scenarios::sync_skill_to_active_scenario(
+            store,
+            scenario_id,
+            &id,
+        ) {
+            log::warn!("Failed to sync newly installed skill to scenario: {e}");
+        }
     }
 
     Ok(id)
@@ -1319,16 +1335,31 @@ fn check_skill_update_internal(
             }
         }
         "local" | "import" => {
-            let (status, error) = match skill.source_ref.as_deref() {
-                Some(path) if Path::new(path).exists() => ("local_only", None),
-                Some(_) => (
-                    "source_missing",
-                    Some("Original source path no longer exists"),
-                ),
+            let (status, error): (&str, Option<String>) = match skill.source_ref.as_deref() {
+                Some(path) => {
+                    let source_path = Path::new(path);
+                    if !source_path.exists() {
+                        (
+                            "source_missing",
+                            Some("Original source path no longer exists".to_string()),
+                        )
+                    } else {
+                        match installer::hash_local_source(source_path) {
+                            Ok(live_hash) => match skill.content_hash.as_deref() {
+                                Some(stored) if stored == live_hash.as_str() => {
+                                    ("up_to_date", None)
+                                }
+                                Some(_) => ("update_available", None),
+                                None => ("local_only", None),
+                            },
+                            Err(err) => ("error", Some(err.to_string())),
+                        }
+                    }
+                }
                 None => ("local_only", None),
             };
             store
-                .update_skill_check_state(&skill.id, None, status, error)
+                .update_skill_check_state(&skill.id, None, status, error.as_deref())
                 .map_err(AppError::db)?;
         }
         _ => {
