@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -72,6 +72,10 @@ pub fn metadata_exists() -> bool {
         || metadata_dir().join("scenarios").is_dir()
 }
 
+pub fn has_complete_skill_snapshot() -> bool {
+    metadata_dir().join("schema.json").is_file() && metadata_dir().join("skills").is_dir()
+}
+
 #[allow(dead_code)]
 pub fn write_all_from_db(store: &SkillStore) -> Result<()> {
     let skills_dir = central_repo::skills_dir();
@@ -108,8 +112,16 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
     if !metadata_exists() {
         return Ok(());
     }
+    if !has_complete_skill_snapshot() {
+        bail!("incomplete sync metadata snapshot: missing schema.json or skills directory");
+    }
 
     let skills = read_skill_files()?;
+    if skills.is_empty() && central_repo_has_valid_skill_dirs()? {
+        bail!(
+            "sync metadata contains no skills, but the central repository contains skill directories"
+        );
+    }
     ensure_unique_path_keys(&skills)?;
 
     let has_complete_scenario_snapshot = metadata_has_complete_scenario_snapshot();
@@ -428,6 +440,30 @@ fn read_skill_files() -> Result<Vec<SkillMetaFile>> {
     read_json_files(metadata_dir().join("skills"))
 }
 
+fn central_repo_has_valid_skill_dirs() -> Result<bool> {
+    let skills_dir = central_repo::skills_dir();
+    if !skills_dir.exists() {
+        return Ok(false);
+    }
+
+    for entry in WalkDir::new(&skills_dir)
+        .min_depth(1)
+        .max_depth(6)
+        .into_iter()
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            name != ".git" && name != ".skills-manager"
+        })
+    {
+        let entry = entry?;
+        if entry.file_type().is_dir() && skill_metadata::is_valid_skill_dir(entry.path()) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 fn read_scenario_files() -> Result<Vec<ScenarioMetaFile>> {
     read_json_files(metadata_dir().join("scenarios"))
 }
@@ -547,9 +583,172 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         file.sync_all()?;
     }
     fs::rename(&tmp, path)?;
-    if let Some(parent) = path.parent() {
+    sync_parent_dir(path)?;
+    Ok(())
+}
+
+fn sync_parent_dir(path: &Path) -> Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // Windows requires FILE_FLAG_BACKUP_SEMANTICS to open a directory
+        // handle. std::fs::File::open uses ordinary file semantics and fails
+        // with Access is denied (os error 5) for directories.
+        // FlushFileBuffers also requires a handle opened with write access.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x02000000;
+
+        let dir = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(parent)?;
+        dir.sync_all()?;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
         let dir = fs::File::open(parent)?;
         dir.sync_all()?;
+        Ok(())
     }
-    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{central_repo, skill_store::SkillStore};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use tempfile::{TempDir, tempdir};
+
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct TestRepo {
+        _lock: MutexGuard<'static, ()>,
+        _tmp: TempDir,
+        store: SkillStore,
+    }
+
+    impl Drop for TestRepo {
+        fn drop(&mut self) {
+            central_repo::set_test_base_dir_override(None);
+        }
+    }
+
+    fn test_repo() -> TestRepo {
+        let lock = TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let base = tmp.path().join("repo");
+        central_repo::set_test_base_dir_override(Some(base.clone()));
+        fs::create_dir_all(central_repo::skills_dir()).unwrap();
+        let store = SkillStore::new(&base.join("test.db")).unwrap();
+        TestRepo {
+            _lock: lock,
+            _tmp: tmp,
+            store,
+        }
+    }
+
+    fn write_skill_dir(name: &str) -> PathBuf {
+        let dir = central_repo::skills_dir().join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), format!("---\nname: {name}\n---\n")).unwrap();
+        dir
+    }
+
+    fn sample_skill(id: &str, central_path: &Path) -> SkillRecord {
+        SkillRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            source_type: "import".to_string(),
+            source_ref: Some(central_path.to_string_lossy().to_string()),
+            source_ref_resolved: None,
+            source_subpath: None,
+            source_branch: None,
+            source_revision: None,
+            remote_revision: None,
+            central_path: central_path.to_string_lossy().to_string(),
+            content_hash: None,
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+            status: "ok".to_string(),
+            update_status: "local_only".to_string(),
+            last_checked_at: None,
+            last_check_error: None,
+        }
+    }
+
+    #[test]
+    fn incomplete_metadata_snapshot_does_not_delete_existing_skills() {
+        let repo = test_repo();
+        let skill_dir = write_skill_dir("example-skill");
+        repo.store
+            .insert_skill(&sample_skill("skill-1", &skill_dir))
+            .unwrap();
+
+        fs::create_dir_all(metadata_dir()).unwrap();
+        fs::write(metadata_dir().join("schema.json"), "{}").unwrap();
+
+        let err = reindex_from_metadata_unlocked(&repo.store).unwrap_err();
+        assert!(err.to_string().contains("incomplete sync metadata"));
+        assert!(repo.store.get_skill_by_id("skill-1").unwrap().is_some());
+    }
+
+    #[test]
+    fn empty_skill_metadata_does_not_delete_central_skills() {
+        let repo = test_repo();
+        let skill_dir = write_skill_dir("example-skill");
+        repo.store
+            .insert_skill(&sample_skill("skill-1", &skill_dir))
+            .unwrap();
+
+        fs::create_dir_all(metadata_dir().join("skills")).unwrap();
+        fs::write(metadata_dir().join("schema.json"), "{}").unwrap();
+
+        let err = reindex_from_metadata_unlocked(&repo.store).unwrap_err();
+        assert!(err.to_string().contains("contains no skills"));
+        assert!(repo.store.get_skill_by_id("skill-1").unwrap().is_some());
+    }
+
+    #[test]
+    fn metadata_reindex_preserves_skill_id_and_tags() {
+        let source = test_repo();
+        let skill_dir = write_skill_dir("example-skill");
+        source
+            .store
+            .insert_skill(&sample_skill("skill-1", &skill_dir))
+            .unwrap();
+        source
+            .store
+            .set_tags_for_skill("skill-1", &["tag-b".to_string(), "tag-a".to_string()])
+            .unwrap();
+        write_all_from_db_unlocked(&source.store).unwrap();
+
+        let restored_store =
+            SkillStore::new(&central_repo::base_dir().join("restored.db")).unwrap();
+        reindex_from_metadata_unlocked(&restored_store).unwrap();
+
+        let restored = restored_store
+            .get_skill_by_id("skill-1")
+            .unwrap()
+            .expect("skill should be restored from metadata");
+        assert_eq!(restored.central_path, skill_dir.to_string_lossy());
+        assert_eq!(
+            restored_store
+                .get_tags_map()
+                .unwrap()
+                .remove("skill-1")
+                .unwrap(),
+            vec!["tag-a".to_string(), "tag-b".to_string()]
+        );
+    }
 }

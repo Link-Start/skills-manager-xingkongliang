@@ -215,6 +215,14 @@ export const getSourceSkillDocument = (skillId: string) =>
 export const deleteManagedSkill = (skillId: string) =>
   invoke<void>("delete_managed_skill", { skillId });
 
+export interface BatchDeleteSkillsResult {
+  deleted: number;
+  failed: string[];
+}
+
+export const deleteManagedSkills = (skillIds: string[]) =>
+  invoke<BatchDeleteSkillsResult>("delete_managed_skills", { skillIds });
+
 export const installLocal = (sourcePath: string, name?: string) =>
   invoke<void>("install_local", { sourcePath, name: name || null });
 
@@ -393,6 +401,13 @@ export const checkAppUpdate = () =>
 
 // ── Git Backup ──
 
+export type GitUpstreamHealth =
+  | "healthy"
+  | "no_remote"
+  | "no_upstream"
+  | "unrelated_histories"
+  | "detached";
+
 export interface GitBackupStatus {
   is_repo: boolean;
   remote_url: string | null;
@@ -404,6 +419,7 @@ export interface GitBackupStatus {
   last_commit_time: string | null;
   current_snapshot_tag: string | null;
   restored_from_tag: string | null;
+  upstream_health: GitUpstreamHealth;
 }
 
 export interface GitBackupVersion {
@@ -415,6 +431,8 @@ export interface GitBackupVersion {
 
 export const gitBackupStatus = () =>
   invoke<GitBackupStatus>("git_backup_status");
+
+export const gitBackupFetch = () => invoke<void>("git_backup_fetch");
 
 export const gitBackupInit = () => invoke<void>("git_backup_init");
 
@@ -430,6 +448,9 @@ export const gitBackupPull = () => invoke<void>("git_backup_pull");
 
 export const gitBackupClone = (url: string) =>
   invoke<void>("git_backup_clone", { url });
+
+export const gitBackupReclone = (url: string) =>
+  invoke<void>("git_backup_reclone", { url });
 
 export const gitBackupCreateSnapshot = () =>
   invoke<string>("git_backup_create_snapshot");

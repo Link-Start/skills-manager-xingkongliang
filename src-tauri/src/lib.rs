@@ -405,6 +405,7 @@ pub fn run() {
             commands::skills::get_skill_document,
             commands::skills::get_source_skill_document,
             commands::skills::delete_managed_skill,
+            commands::skills::delete_managed_skills,
             commands::skills::install_local,
             commands::skills::install_git,
             commands::skills::preview_git_install,
@@ -446,6 +447,7 @@ pub fn run() {
             commands::settings::app_exit,
             commands::settings::hide_to_tray,
             // Git Backup
+            commands::git_backup::git_backup_fetch,
             commands::git_backup::git_backup_status,
             commands::git_backup::git_backup_init,
             commands::git_backup::git_backup_set_remote,
@@ -453,6 +455,7 @@ pub fn run() {
             commands::git_backup::git_backup_push,
             commands::git_backup::git_backup_pull,
             commands::git_backup::git_backup_clone,
+            commands::git_backup::git_backup_reclone,
             commands::git_backup::git_backup_create_snapshot,
             commands::git_backup::git_backup_list_versions,
             commands::git_backup::git_backup_restore_version,
