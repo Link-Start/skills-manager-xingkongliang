@@ -5,12 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.15.1] - 2026-04-28
+## [1.15.2] - 2026-04-29
 
 ### Changed
+- Replaced the single-skill delete confirmation modal with an inline popover next to the trash button. Deletions now run in the background with a per-card spinner, so you can keep deleting other skills without waiting for each one to finish.
+
+### Fixed
+- Sped up scenario switching, especially for libraries with many skills.
+
+## [1.15.1] - 2026-04-28
+
+### Added
+- Show real-time clone progress while installing skills from Git repositories.
+- Cache cloned Git repositories to speed up repeated installs and reduce network wait time.
+
+### Changed
+- Redesigned the Git backup experience with clearer health status and recovery actions.
+- Improved the Git toolbar layout to reduce crowding around filter controls.
 - Use symlinks as the default sync mode for faster scenario switching and a single source of truth.
 
 ### Fixed
+- Improved Git sync robustness and recovery behavior.
+- Avoided no-op commit failures when initializing Git backup.
+- Hardened sync metadata handling across lifecycle events and Windows directory cleanup.
+- Improved cached Git checkout isolation and materialization reliability.
 - Improved bulk skill deletion performance by processing selected skills in one operation.
 
 ## [1.15.0] - 2026-04-25
