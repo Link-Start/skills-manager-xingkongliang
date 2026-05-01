@@ -32,7 +32,7 @@ pub(crate) fn sync_skill_to_active_scenario(
                 return Ok(());
             };
             let source = PathBuf::from(&skill.central_path);
-            let target_name = skill.name;
+            let target_name = sync_engine::target_dir_name(&source, &skill.name);
             let old_targets = store.get_targets_for_skill(skill_id).unwrap_or_default();
             for adapter in &adapters {
                 // Remove stale target from a previous sync if the skill name changed
@@ -310,13 +310,37 @@ pub async fn delete_scenario(
     result
 }
 
+/// Apply a scenario to the default targets (all enabled agent globals).
+///
+/// This is the explicit user-initiated action introduced in v1.16. It performs
+/// the same disk-writing work as the legacy [`switch_scenario`] command but is
+/// only invoked when the user clicks "Apply to Default" — sidebar/command-palette
+/// scenario clicks no longer call this.
+#[tauri::command]
+pub async fn apply_scenario_to_default(
+    app: tauri::AppHandle,
+    id: String,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<(), AppError> {
+    apply_scenario_to_default_impl(app, id, store.inner().clone()).await
+}
+
+/// Legacy command kept for the tray menu and backward compatibility. Frontend
+/// callers should use [`apply_scenario_to_default`] instead.
 #[tauri::command]
 pub async fn switch_scenario(
     app: tauri::AppHandle,
     id: String,
     store: State<'_, Arc<SkillStore>>,
 ) -> Result<(), AppError> {
-    let store = store.inner().clone();
+    apply_scenario_to_default_impl(app, id, store.inner().clone()).await
+}
+
+async fn apply_scenario_to_default_impl(
+    app: tauri::AppHandle,
+    id: String,
+    store: Arc<SkillStore>,
+) -> Result<(), AppError> {
     let result = tauri::async_runtime::spawn_blocking(move || {
         ensure_scenario_exists(&store, &id)?;
         let desired_targets = collect_scenario_sync_targets(&store, &id)?;
@@ -328,7 +352,7 @@ pub async fn switch_scenario(
             }
         }
 
-        // Set new active
+        // Mark this scenario as the one currently applied to default targets.
         store.set_active_scenario(&id).map_err(AppError::db)?;
 
         // Sync missing or stale targets for the new scenario.
@@ -483,10 +507,11 @@ fn collect_scenario_sync_targets(
 
     for skill in &skills {
         let source = PathBuf::from(&skill.central_path);
+        let target_name = sync_engine::target_dir_name(&source, &skill.name);
         let adapters =
             enabled_installed_adapters_for_scenario_skill(store, scenario_id, &skill.id)?;
         for adapter in &adapters {
-            let target = adapter.skills_dir().join(&skill.name);
+            let target = adapter.skills_dir().join(&target_name);
             let mode = sync_engine::sync_mode_for_tool(&adapter.key, configured_mode.as_deref());
             targets.push(ScenarioSyncTarget {
                 skill_id: skill.id.clone(),
@@ -693,16 +718,7 @@ mod tests {
         dir
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn switching_scenarios_keeps_overlapping_skill_target() {
-        let tmp = tempdir().unwrap();
-        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
-        let source_base = tmp.path().join("central");
-        let target_base = tmp.path().join("agent-skills");
-        fs::create_dir_all(&source_base).unwrap();
-        fs::create_dir_all(&target_base).unwrap();
-
+    fn configure_single_custom_tool(store: &SkillStore, target_base: &std::path::Path) {
         let custom_tools = vec![CustomToolDef {
             key: "test_agent".to_string(),
             display_name: "Test Agent".to_string(),
@@ -725,6 +741,19 @@ mod tests {
                 &serde_json::to_string(&disabled_builtin_tools).unwrap(),
             )
             .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn switching_scenarios_keeps_overlapping_skill_target() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let source_base = tmp.path().join("central");
+        let target_base = tmp.path().join("agent-skills");
+        fs::create_dir_all(&source_base).unwrap();
+        fs::create_dir_all(&target_base).unwrap();
+
+        configure_single_custom_tool(&store, &target_base);
 
         store
             .insert_scenario(&sample_scenario("old", "Old"))
@@ -782,5 +811,53 @@ mod tests {
         assert!(targets
             .iter()
             .any(|target| target.skill_id == "new-only" && target.tool == "test_agent"));
+    }
+
+    #[test]
+    fn scenario_sync_keeps_duplicate_skill_names_separate() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        let source_base = tmp.path().join("central");
+        let target_base = tmp.path().join("agent-skills");
+        fs::create_dir_all(&source_base).unwrap();
+        fs::create_dir_all(&target_base).unwrap();
+        configure_single_custom_tool(&store, &target_base);
+        store.set_setting("sync_mode", "copy").unwrap();
+
+        store
+            .insert_scenario(&sample_scenario("active", "Active"))
+            .unwrap();
+
+        let first_dir = write_skill_dir(&source_base, "skill123");
+        let second_dir = write_skill_dir(&source_base, "skill123-2");
+        fs::write(first_dir.join("unique.txt"), "first").unwrap();
+        fs::write(second_dir.join("unique.txt"), "second").unwrap();
+
+        store
+            .insert_skill(&sample_skill("first", "skill123", &first_dir))
+            .unwrap();
+        store
+            .insert_skill(&sample_skill("second", "skill123", &second_dir))
+            .unwrap();
+        store.add_skill_to_scenario("active", "first").unwrap();
+        store.add_skill_to_scenario("active", "second").unwrap();
+
+        sync_scenario_skills(&store, "active").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target_base.join("skill123/unique.txt")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_to_string(target_base.join("skill123-2/unique.txt")).unwrap(),
+            "second"
+        );
+        let targets = store.get_all_targets().unwrap();
+        assert!(targets.iter().any(|target| {
+            target.skill_id == "first" && target.target_path.ends_with("skill123")
+        }));
+        assert!(targets.iter().any(|target| {
+            target.skill_id == "second" && target.target_path.ends_with("skill123-2")
+        }));
     }
 }
