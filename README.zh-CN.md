@@ -18,7 +18,7 @@
 
 | 我的 Skills | 项目 Skills |
 |:-----------:|:----------:|
-| <img src="assets/CleanShot_20260312_234539@2x.png" width="400" alt="我的 Skills" /> | <img src="assets/CleanShot_20260312_234613@2x.png" width="400" alt="项目 Skills" /> |
+| <img src="assets/CleanShot_20260419_003504@2x.png" width="400" alt="我的 Skills" /> | <img src="assets/CleanShot_20260419_003526@2x.png" width="400" alt="项目 Skills" /> |
 
 ## 功能
 
@@ -110,10 +110,68 @@ npm install
 npm run tauri:dev
 ```
 
+### CLI
+
+仓库现在包含一个面向 agent 的 CLI，而且它是建立在与桌面应用共用的 Rust shared core 之上。也就是：repo 初始化、tool 解析、scenario 同步/应用逻辑，以及 metadata reindex，都被抽到了可复用 core 模块中，而不是另外在 CLI 里重写一份。
+
+```bash
+# 查看当前仓库路径和统计信息
+npm run cli -- repo status
+
+# 列出技能 / 查看单个技能
+npm run cli -- skills list
+npm run cli -- skills show db
+
+# 用 shared core 预览或应用某个 scenario
+npm run cli -- scenarios list
+npm run cli -- scenarios preview Default
+npm run cli -- scenarios apply Default
+
+# 导出单个技能到其他 agent 工作目录
+npm run cli -- skills export db --dest ~/.claude/skills/db
+
+# 查看或同步 git 管理的 skills 仓库
+npm run cli -- git status
+npm run cli -- git pull
+npm run cli -- git commit -m "chore: update skills"
+```
+
+可用命令分组：
+- `repo`：查看或修改当前 base directory
+- `tools`：列出已检测到的工具目标与路径
+- `skills`：列出、查看、导出技能
+- `scenarios`：列出 scenario、预览同步目标，或将某个 scenario 应用到默认工具路径
+- `git`：操作 git 管理的 `skills/` 仓库（`clone`、`pull`、`push`、`commit`、`versions`、`restore`）
+
+额外参数：
+- `--skills-root <path>`：直接针对某个已 clone / 已导出的 skills repo 操作，而不是本机 app 默认目录。manager 的状态（DB、scenarios、cache、logs）会落在 `~/.skills-manager/external/<name>-<hash>/`，按 skills root 的规范化路径分目录隔离，外部仓库本身保持干净。
+- `--json`：给脚本 / agent 使用的机器可读输出
+
+```bash
+npm run -s cli -- --skills-root /path/to/my-skills --json skills list
+```
+
+#### 把 CLI 二进制安装到 PATH
+
+如果 agent / 脚本直接调用 `skills-manager-cli`（而不是 `npm run`），需要先把二进制放到 PATH 上：
+
+```bash
+npm run cli:install
+# 等价于：
+# cargo install --path src-tauri --bin skills-manager-cli --locked --force
+```
+
+二进制会装到 `~/.cargo/bin/skills-manager-cli`。代码更新后再跑一次即可刷新。
+
+#### 与桌面应用并发使用
+
+CLI 和桌面应用共享同一个 SQLite 数据库。SQLite 会串行化写入，所以数据是安全的，但运行中的应用不会自动刷新它的内存缓存 —— 在 CLI 跑完 `scenarios apply`、`git pull` 等会改状态的命令后，重启应用或手动刷新一次。
+
 ### 构建
 
 ```bash
 npm run tauri:build
+npm run cli:build
 ```
 
 ## 常见问题
