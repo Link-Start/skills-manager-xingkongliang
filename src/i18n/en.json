@@ -6,9 +6,10 @@
     "dashboard": "Dashboard",
     "mySkills": "Library",
     "globalWorkspace": "Global Workspace",
+    "lobsterAgents": "Lobster Agents",
     "installSkills": "Install Skills",
-    "scenarios": "Presets",
-    "newScenario": "New Preset",
+    "presets": "Presets",
+    "newPreset": "New Preset",
     "projects": "Project Workspaces",
     "addProject": "Link Project",
     "settings": "Settings"
@@ -20,27 +21,27 @@
     "items": {
       "workflows": {
         "title": "Recommended Workflows",
-        "description": "Single-agent: install skills → open Global Workspace → click a Preset pill to activate. Multi-project: open a Project Workspace and click a Preset pill to activate skills for that project's agents. Multi-machine: turn on Git Backup in Settings to sync your library across devices."
+        "description": "Single-agent: install skills → open Global Workspace → click a Preset pill to activate, or hit + Add Skills to pick from your library and toggle target agents inline. Multi-project: open a Project Workspace and use the same Preset pills or + Add Skills picker for that project's agents. Multi-machine: turn on Git Backup in Settings to sync your library across devices."
       },
-      "scenarios": {
+      "presets": {
         "title": "Presets",
         "description": "Group skills into named presets. In any workspace, click a Preset pill to instantly activate or deactivate all its skills for the current agent scope. Active presets show ✓; partially installed ones show a count. Applying a preset is a one-time copy — not a live sync."
       },
       "install": {
         "title": "Install Skills",
-        "description": "Import from local folders, Git repositories, archives, or the marketplace. Batch-import multiple skills from a folder at once. Add a SkillsMP API key to enable AI-powered search."
+        "description": "Import from local folders, Git repositories, archives, or the marketplace. Batch-import multiple skills from a folder at once."
       },
       "sync": {
         "title": "Library",
-        "description": "Browse all installed skills with bulk tag editing and per-agent sync toggles. Click an agent icon on any skill card to install or remove that skill for that agent in one click. Click the card itself to view docs, version history, and agent sync details."
+        "description": "Browse all installed skills with bulk tag editing and per-agent sync toggles. Filter by source or tag — including an Untagged pill to surface skills missing labels. Click an agent icon on any skill card to install or remove that skill for that agent in one click; the always-visible delete button removes a skill from the central library. Click the card itself to view docs, version history, and agent sync details."
       },
       "global": {
         "title": "Global Workspace",
-        "description": "Each agent gets its own page listing every skill in its global folder — including ones installed outside Skills Manager — so the view matches what the agent actually sees. Add or remove skills per agent, or use the All Agents overview to manage every installed agent at once."
+        "description": "Each agent gets its own page listing every skill in its global folder — including ones installed outside Skills Manager — so the view matches what the agent actually sees. Use + Add Skills to pull from your central library with inline target-agent chips, or use the All Agents overview to manage every installed agent at once. Skills that only exist in an agent folder can be deleted directly from the card."
       },
       "projects": {
         "title": "Project Workspaces",
-        "description": "Link a project to browse per-agent local skill folders, compare with the central library, and import or export changes. Use Preset pills to activate skill groups, or add skills individually."
+        "description": "Link a project to browse per-agent local skill folders, compare with the central library, and import or export changes. Use Preset pills to activate skill groups, or open + Add Skills to pick from your library with a multi-agent target picker."
       },
       "backup": {
         "title": "Git Backup",
@@ -48,15 +49,15 @@
       },
       "settings": {
         "title": "Settings",
-        "description": "Manage agent paths and toggles, add custom agents, drag to reorder how agents appear across the app, change sync mode, theme, text size, language, proxy, Git remote, AI search key, and check for app updates."
+        "description": "Manage agent paths and toggles, add custom agents, drag to reorder how agents appear across the app, change sync mode, theme, text size, language, proxy, Git remote, AI search key, and check for app updates. Use Export Logs to bundle recent logs and install/remove/update/sync activity into a single zip when filing an issue."
       }
     }
   },
   "commandPalette": {
-    "placeholder": "Jump to skill, scenario, project, action…",
+    "placeholder": "Jump to skill, preset, project, action…",
     "empty": "No matches. Try a different query.",
     "skills": "Skills",
-    "scenarios": "Presets",
+    "presets": "Presets",
     "projects": "Projects",
     "actions": "Actions",
     "scanImport": "Scan & import local skills",
@@ -68,11 +69,12 @@
   },
   "dashboard": {
     "greeting": "Hello!",
-    "currentScenario": "Current Scenario",
-    "skillsEnabled": "{{count}} Skills enabled",
-    "scenarioSkills": "Scenario Skills",
+    "summary": "{{skills}} Skills in Library · {{agents}} Agents connected · {{projects}} Projects",
+    "librarySkills": "Library Skills",
+    "syncCoverage": "Sync Coverage",
+    "connectedAgents": "Connected Agents",
     "synced": "Synced",
-    "supportedAgents": "Agents",
+    "notSynced": "Not synced",
     "scanImport": "Scan & Import Local Skills",
     "installNew": "Install New Skills",
     "recentActivity": "Recent Activity"
@@ -87,7 +89,7 @@
     "defaultLocationMissing": "Default location missing",
     "openLocationSettings": "Open settings",
     "applyCallout": "Clicking a preset only opens it. Use Apply Preset to add or remove its skills from selected agents.",
-    "subtitle": "{{count}} skills from the central library are enabled in “{{scenario}}”",
+    "subtitle": "{{count}} skills from the central library are enabled in “{{preset}}”",
     "searchPlaceholder": "Search skills in the central library...",
     "allStatus": "All Status",
     "synced": "Synced",
@@ -96,23 +98,23 @@
     "enable": "Enable",
     "enabledButton": "Enabled",
     "disable": "Disable",
-    "enableForScenario": "Enable for current scenario",
-    "disableForScenario": "Disable for current scenario",
-    "enabledInScenario": "Added to current scenario",
-    "disabledInScenario": "Removed from current scenario",
-    "inScenario": "Enabled in current scenario",
-    "notInScenario": "Not enabled in current scenario",
-    "remove": "Remove from scenario",
+    "enableForPreset": "Enable for current preset",
+    "disableForPreset": "Disable for current preset",
+    "enabledInPreset": "Added to current preset",
+    "disabledInPreset": "Removed from current preset",
+    "inPreset": "Enabled in current preset",
+    "notInPreset": "Not enabled in current preset",
+    "remove": "Remove from preset",
     "delete": "Delete skill",
-    "deleteConfirm": "Delete skill \"{{name}}\" permanently? This removes its central library files, scenario links, and synced agent targets.",
+    "deleteConfirm": "Delete skill \"{{name}}\" permanently? This removes its central library files, preset links, and synced agent targets.",
     "deleted": "deleted",
     "viewDoc": "View docs",
     "noSkills": "No skills to display",
     "addFirst": "Click \"Install Skills\" to add skills into the central library",
     "noMatch": "No skills match the current search or filter",
-    "noScenario": "No scenario is currently available",
-    "currentScenarioFallback": "Current scenario",
-    "scenarioCount": "{{count}} scenarios",
+    "noPreset": "No preset is currently available",
+    "currentPresetFallback": "Current preset",
+    "presetCount": "{{count}} presets",
     "syncCoverage": "Sync coverage",
     "syncSummary": "{{synced}} / {{total}} synced",
     "moreAgents": "+{{count}} more",
@@ -156,6 +158,8 @@
     "gitCurrentVersionRestored": "Current: restored from {{tag}}",
     "gitCurrentVersionUnknown": "Current: no snapshot",
     "updateNotification": "{{count}} skill(s) have updates available",
+    "autoUpdated": "{{count}} skill(s) auto-updated",
+    "autoUpdateFailed": "{{count}} skill(s) failed to auto-update",
     "viewUpdates": "View",
     "compactEnabledCount": "{{count}} enabled",
     "confirmSyncTitle": "Confirm sync scope",
@@ -174,11 +178,25 @@
       "source": "Source"
     },
     "sourceDiffUnavailable": "Source content is unavailable right now",
+    "sourceDiff": {
+      "noChanges": "No changes — the source matches the central library",
+      "status": {
+        "added": "Added",
+        "removed": "Removed",
+        "modified": "Modified"
+      },
+      "execBit": "Permission {{before}} → {{after}}",
+      "summary": {
+        "binary": "Binary file changed",
+        "too_large": "File changed but is too large to preview",
+        "permission_only": "Only file permissions changed"
+      }
+    },
     "localSource": "Local library",
     "agentCount": "{{count}} agents",
     "ready": "Ready",
     "standby": "Standby",
-    "agentTogglesTitle": "Agent Toggles",
+    "agentTogglesTitle": "Global Workspace",
     "expandAgentToggles": "Expand",
     "collapseAgentToggles": "Collapse",
     "agentToggleEnabled": "{{agent}} enabled",
@@ -227,6 +245,7 @@
     "tags": {
       "filter": "Tags",
       "allTags": "All Tags",
+      "untagged": "Untagged",
       "addTag": "Add tag...",
       "noTags": "No tags",
       "tagAdded": "Tag added",
@@ -240,7 +259,7 @@
     "batchAlreadyUpToDate": "{{count}} skills already up to date",
     "batchUpdateFailed": "{{count}} skills failed to refresh",
     "deleteSelected": "Delete {{count}}",
-    "batchDeleteConfirm": "Delete {{count}} selected skills permanently? This removes their central library files, scenario links, and synced agent targets.",
+    "batchDeleteConfirm": "Delete {{count}} selected skills permanently? This removes their central library files, preset links, and synced agent targets.",
     "batchDeleted": "{{count}} skills deleted",
     "batchDeleteFailed": "{{count}} skills failed to delete",
     "batchToggleFailed": "{{count}} skills failed to update",
@@ -330,10 +349,6 @@
     "repoUrl": "Repository URL",
     "repoUrlPlaceholder": "https://github.com/user/repo.git or git@github.com...",
     "gitAlreadyInstalled": "\"{{name}}\" is already installed. Reinstalling will update it.",
-    "aiSearchPlaceholder": "AI search — describe what you need...",
-    "aiSearchNoKey": "Set your SkillsMP API key in Settings to enable AI search",
-    "aiSearchButton": "AI Search",
-    "aiSearchToggle": "AI-powered search (SkillsMP)",
     "onlyThisContributor": "Only this contributor",
     "installClone": "Clone & Preview",
     "gitPreview": {
@@ -405,10 +420,12 @@
     "projectSkillsPathPlaceholder": ".my-agent/skills",
     "projectSkillsPathDesc": "Optional. Set a path relative to the project root to make this custom agent available in project workspaces.",
     "projectSkillsPathValue": "Project path: {{path}}",
-    "projectSkillsPathEmpty": "Project path: not set (click to edit)",
+    "projectSkillsPathDefault": "Project path: {{path}} (default)",
+    "projectSkillsPathEmpty": "Project path: not set",
     "projectAgentSupported": "Project workspace supported",
     "pathSaved": "Agent path updated",
     "pathReset": "Agent path reset to default",
+    "projectPathReset": "Project path reset to default",
     "defaultPathHint": "Using the default skills path",
     "overridePathHint": "Using a manually overridden skills path",
     "customAgentAdded": "Custom agent added",
@@ -417,7 +434,7 @@
     "addAgent": "Add",
     "globalConfig": "Global Configuration",
     "repoPath": "Central Repository Path",
-    "repoPathDesc": "Default storage location for all Skills and scenario configs.",
+    "repoPathDesc": "Default storage location for all Skills and preset configs.",
     "repoPathSaved": "Central repository path updated",
     "repoPathReset": "Central repository path reset to default",
     "repoPathRestartNotice": "Restart the app to apply the new path and migrate existing data.",
@@ -430,10 +447,10 @@
     "syncModeDesc": "Symlinks are recommended — minimal disk usage with live updates.",
     "symlink": "Symlink",
     "copy": "File Copy",
-    "currentScenario": "Current Scenario",
-    "currentScenarioDesc": "Switch the app to another scenario and refresh active skills immediately.",
-    "defaultScenario": "Default Startup Scenario",
-    "defaultScenarioDesc": "Scenario loaded automatically on app launch.",
+    "currentPreset": "Current Preset",
+    "currentPresetDesc": "Switch the app to another preset and refresh active skills immediately.",
+    "defaultPreset": "Default Startup Preset",
+    "defaultPresetDesc": "Preset loaded automatically on app launch.",
     "theme": "Theme",
     "themeDesc": "Choose the app appearance.",
     "themeLight": "Light",
@@ -448,8 +465,8 @@
     "language": "Language",
     "help": "Help",
     "about": "About",
-    "version": "Skills Manager 1.19.0",
-    "tagline": "Cross-platform. Minimal, efficient, seamless multi-scenario switching.",
+    "version": "Skills Manager 1.22.5",
+    "tagline": "Cross-platform. Minimal, efficient, seamless multi-preset switching.",
     "checkUpdate": "Check for Updates",
     "checking": "Checking…",
     "updateAvailable": "New version {{version}} available!",
@@ -459,6 +476,17 @@
     "installing": "Installing…",
     "restartToApply": "Update installed. Restart the app to apply.",
     "updateError": "Auto-update failed. Opening download page…",
+    "reportIssue": "Report Issue",
+    "reportIssueHint": "Copy app/OS info and recent log excerpt to clipboard and open a new GitHub issue",
+    "reportIssueExportHint": "If the issue is complex, click 'Export Logs' in Settings → About and attach the zip to this issue.",
+    "diagnosticsCopied": "Diagnostic info copied. Paste it into the GitHub issue.",
+    "diagnosticsCopyManual": "Could not access clipboard — please copy the info below manually:",
+    "exportLogs": "Export Logs",
+    "exportLogsHint": "Bundle recent logs and activity history as a zip in your Downloads folder",
+    "exportLogsDone": "Logs exported ({{count}} file(s)). Drag the zip into your GitHub issue.",
+    "exportLogsFailed": "Failed to export logs.",
+    "panicBanner": "Skills Manager crashed during the last session ({{time}}).",
+    "panicDismiss": "Dismiss",
     "gitBackup": "Git Sync",
     "gitBackupDesc": "Back up your skill library to a Git repository for version control and multi-machine sync.",
     "proxyConfig": "Network Proxy",
@@ -467,13 +495,23 @@
     "proxyUrlPlaceholder": "http://127.0.0.1:7890",
     "proxyUrlSaved": "Proxy settings saved",
     "proxyUrlInvalid": "Proxy URL must start with http://, https://, or socks5://",
+    "autoUpdate": {
+      "title": "Skill Auto-Update",
+      "intervalLabel": "Check Frequency",
+      "intervalDesc": "How often the app checks installed skills for upstream updates in the background.",
+      "intervalOff": "Off",
+      "interval1h": "Hourly",
+      "interval6h": "Every 6 hours",
+      "interval24h": "Daily",
+      "lastRun": "last checked {{time}}",
+      "applyLabel": "Apply updates automatically",
+      "applyDesc": "When on, updates are pulled and applied automatically; when off, they are only flagged in the Library for manual update.",
+      "applyOff": "Off (notify only)",
+      "applyOn": "On"
+    },
     "gitSyncConfig": "Git Sync Configuration",
     "gitSyncConfigDesc": "This page stores remote repository preferences only. Initialize and run sync from the My Skills page.",
     "gitConfigSaved": "Git sync configuration saved",
-    "skillsmpTitle": "SkillsMP AI Search",
-    "skillsmpApiKey": "API Key",
-    "skillsmpDesc": "Enter your SkillsMP API key to enable AI-powered skill search.",
-    "skillsmpGetKey": "Get your API key",
     "gitStartBackup": "Set Up Backup",
     "gitStartHint": "If Remote URL is filled, it will clone from remote; otherwise it initializes a local repository.",
     "gitSetupTitle": "Set Up Git Backup",
@@ -490,6 +528,7 @@
     "gitRecoverySubtitleUnrelated": "Local repository and remote do not share history; sync cannot proceed. Pick how to fix it.",
     "gitRecoverySubtitleNoUpstream": "No upstream tracking is set up with the remote. Pick how to fix it.",
     "gitRecoverySubtitleDetached": "Currently in detached HEAD state, possibly after restoring a snapshot. Realign to remote or restore a different snapshot first.",
+    "gitRecoverySubtitleConflict": "Local and remote skills were changed in conflicting ways. The merge was rolled back automatically — re-clone from remote to restore a clean copy. Skills that exist only locally are preserved.",
     "gitRecoveryCardRecloneTitle": "Use remote backup (recommended)",
     "gitRecoveryCardRecloneDesc": "Keep a temporary copy of local skills, re-clone from remote, then merge non-conflicting items back. Safest option.",
     "gitRecoveryCardKeepLocalTitle": "Keep local, set up tracking",
@@ -532,7 +571,7 @@
     "gitPendingSync": "Local changes are ready to sync",
     "gitErrorAuth": "Authentication failed. Check SSH key or access token.",
     "gitErrorNetwork": "Network connection failed. Check your network and remote URL.",
-    "gitErrorConflict": "Sync conflict detected. Pull and resolve conflicts first.",
+    "gitErrorConflict": "Local and remote changes conflict. Choose how to resolve it.",
     "gitErrorNotRepo": "Git repository not found. Set up backup first.",
     "gitErrorRejected": "Remote has new updates. Pull and merge them before syncing.",
     "gitErrorUnrelatedHistories": "Local and remote do not share history. Open Fix Sync Setup to resolve.",
@@ -564,7 +603,7 @@
     "loadFailed": "Failed to load {{item}}",
     "dataOutOfDate": "Some data could not be refreshed",
     "documentMissing": "No document file was found",
-    "scenarios": "scenarios",
+    "presets": "presets",
     "agents": "agent status",
     "skills": "skill list",
     "success": "Operation successful",
@@ -575,9 +614,49 @@
     "save": "Save",
     "create": "Create",
     "search": "Search",
-    "goToSettings": "Settings"
+    "goToSettings": "Settings",
+    "expandAll": "Show all",
+    "collapse": "Collapse"
   },
-  "scenario": {
+  "addFromLibrary": {
+    "title": "Add from Library",
+    "targetLabel": "Target:",
+    "noTargetSelected": "no target",
+    "changeTarget": "Change target",
+    "selectAllTargets": "Select all",
+    "clearTargets": "Clear",
+    "searchPlaceholder": "Search the library…",
+    "emptyLibrary": "Your library is empty",
+    "emptyMatch": "No skills match",
+    "ctaEmpty": "Pick skills to add to {{agent}}",
+    "ctaEmptyProject": "Pick skills to add ({{count}} agents)",
+    "ctaGlobal": "Add {{count}} to {{agent}}",
+    "ctaProject": "Add {{count}} · {{agentCount}} agents",
+    "ctaNoTarget": "Select target agents first",
+    "toastInstalled": "{{count}} skill(s) added",
+    "toastFailed": "{{count}} skill(s) failed to add",
+    "toastAddedToProject": "Added \"{{skill}}\" to {{project}}",
+    "toastRemovedFromProject": "Removed \"{{skill}}\" from {{project}}",
+    "add": "Add",
+    "installedShort": "Added",
+    "projectsTitle": "Project Workspaces",
+    "projectsSummary": "{{installed}} / {{total}} installed",
+    "errors": {
+      "noTarget": "Select at least one target agent"
+    },
+    "status": {
+      "installed": "Installed",
+      "conflict": "Name conflict",
+      "unavailable": "No target"
+    },
+    "tooltip": {
+      "installed": "Already in the workspace",
+      "remove": "Click to remove from this agent",
+      "conflict": "Rename the skill in your library first",
+      "unavailable": "Select a target agent first"
+    }
+  },
+  "preset": {
     "create": "New Preset",
     "name": "Preset Name",
     "description": "Description (optional)",
@@ -615,7 +694,7 @@
     "tabManual": "Manual",
     "tabScan": "Scan",
     "tabLinked": "Linked Workspace",
-    "addLinkedHint": "Link an external skills root. It will be managed as a workspace only and will not participate in global scenario sync.",
+    "addLinkedHint": "Link an external skills root. It will be managed as a workspace only and will not participate in global preset sync.",
     "linkedNamePlaceholder": "Workspace name",
     "linkedPathPlaceholder": "Skills directory path",
     "linkedDisabledPathHint": "A sibling directory with the \"-disabled\" suffix will be created automatically for disabled skills.",
@@ -756,6 +835,12 @@
     "skillCount": "{{count}} skills",
     "deactivateConfirm": "Remove all {{count}} installed skills from \"{{name}}\"?"
   },
+  "lobsterWorkspace": {
+    "title": "Lobster Agents",
+    "allAgents": "All Lobster Agents",
+    "noAgents": "No Lobster agents installed",
+    "noAgentsHint": "Install OpenClaw, Hermes Agent, or another lobster-class personal assistant to see it here."
+  },
   "globalWorkspace": {
     "title": "Global Workspace",
     "allAgents": "All Agents",
@@ -790,6 +875,10 @@
       "upload": "Upload",
       "pull": "Pull",
       "removeManaged": "Remove from agent",
+      "deleteLocal": "Delete local skill",
+      "deleteLocalConfirmTitle": "Delete local skill?",
+      "deleteLocalConfirmMessage": "Delete \"{{name}}\" from {{agent}}? This removes the local files and cannot be undone.",
+      "deletedLocalToast": "Deleted \"{{name}}\" from {{agent}}.",
       "uploadedToast": "Uploaded \"{{name}}\" to Skills Center. It was not synced back to {{agent}}.",
       "pulledToast": "Updated \"{{name}}\" from Skills Center in {{agent}}.",
       "uploadConfirmTitle": "Update center skill?",

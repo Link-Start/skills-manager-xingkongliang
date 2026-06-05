@@ -5,6 +5,155 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.5] - 2026-06-01
+
+### Release Overview
+- A Git-sync reliability release: the very first backup to a fresh remote now actually uploads instead of silently reporting "Up to date", conflicting edits from two machines recover gracefully instead of wedging the library, and Git operations are now logged so sync problems can be diagnosed. Built-in agents also gain editable project skill paths.
+
+### User-facing
+- **First backup to a new remote now uploads** — Setting up backup against a freshly created empty repository used to commit everything locally but never push, so Sync reported "Up to date" while the remote stayed empty. The first sync now correctly performs the initial push (setting up upstream tracking), so a new remote is populated as expected (#162, #179, #116).
+- **Sync conflicts recover instead of breaking the library** — When two machines edited the same skill and both synced, the merge conflict left the repository in a stuck state that blocked all future syncs (and could even prevent the app from loading). Sync now rolls back the failed merge automatically and offers a one-click "re-clone from remote" recovery, with skills that exist only locally preserved (#169).
+- **Built-in agents get editable project skill paths** — The per-project skills path (and reset-to-default) that was previously only available for custom agents now works for built-in agents too. Each path row exposes edit/reset actions on hover for both the global and project paths.
+
+### Developer & Governance
+- Fixed the sync push gate in `handleGitSync`: a `no_upstream` repo reports `ahead = 0` (there is no `@{upstream}` to diff against), so the old `committed || ahead > 0` condition skipped the first push entirely. It now also pushes when `upstream_health === "no_upstream"`, relying on the backend `push -u` path to establish tracking.
+- Added structured logging across the Git backup subsystem (`init`/`set_remote`/`commit`/`push`/`pull`/`snapshot`/`restore`/`clone`/`reclone`) at INFO, with a single WARN failure chokepoint in `run_git_checked`; remote URLs are redacted. Previously the subsystem emitted no logs, leaving "sync silently did nothing" reports undiagnosable.
+- `pull_unlocked` now runs the merge via `run_git` and, on conflict, logs a warning, runs best-effort `git merge --abort` to clear the conflicted tree and `MERGE_HEAD`, then bails with a recognizable `SYNC_CONFLICT` error; the frontend routes that to the recovery dialog (re-clone only for conflicts). Regression tests cover first-push-to-empty-remote and the two-sided conflict abort.
+- Built-in agent project-path overrides persist in a new `custom_tool_project_paths` setting (an empty value or one equal to the built-in default clears the override); the Settings path UI was unified so global and project rows share the same right-aligned hover actions.
+## [1.22.4] - 2026-05-30
+
+### Release Overview
+- A fix release that restores the missing delete/manage button after uploading a global-workspace skill to the central library, and makes the "update available" badge agree with what the Diff tab actually shows.
+
+### User-facing
+- **Uploaded skills get their delete button back** — Uploading a skill from the Global Workspace to the central library used to leave the card with no actions at all: the skill was synced but unmanaged, so neither a delete nor a re-upload button appeared. Newly uploaded skills are now registered as managed targets, and a one-time startup repair restores the button for skills that were already stranded by the earlier behavior.
+- **Update badge and diff now agree** — The "update available" badge hashed the whole skill directory, but the Diff tab only compared the main `SKILL.md`, so a change inside `references/`, `scripts/`, an added/removed file, or an exec-bit flip would flag an update yet show an empty diff. The Diff tab now reports per-file changes across the entire skill directory, so the badge and the diff always match.
+
+### Developer & Governance
+- Uploading a local agent skill to the center now reuses the regular `sync_single_skill_to_tool` path so the adopted skill becomes a managed target consistent with every other managed skill; the freshly inserted skill row is rolled back if target registration fails.
+- Added a `backfill_stranded_agent_targets` startup repair that scans each installed, enabled agent for center skills whose `source_ref` points at an agent skills dir but lack a target. It matches strictly by `source_ref` (never content hash, to avoid adopting look-alikes) and only repairs skills the workspace classifies as `in_sync` (since the sync rewrites the agent artifact from central). The pass is idempotent and short-circuits on a cheap pre-check once everything is targeted.
+- Shared one file-enumeration helper (`content_hash::list_content_files`) for both hashing and diffing so their scope can never drift, and added a `get_skill_source_diff` command returning per-file entries (added / removed / modified; text / binary / too_large / permission_only); the Diff tab renders `SkillSourceDiffViewer` per changed file, lazily loaded on open.
+- Documented the macOS 15 Gatekeeper "could not verify this app is free of malware" dialog in the README, with a screenshot and the steps to open the app anyway.
+- CI: skip the rust-cache save step to avoid false-positive failures on Windows release builds.
+## [1.22.3] - 2026-05-30
+
+### Release Overview
+- A small fix release that keeps each project's agent buttons readable in the skill detail panel when a project targets many agents.
+
+### User-facing
+- **Agent buttons no longer overflow the card** — In a skill's detail panel, projects that target many agents used to push the per-agent add/installed buttons past the card edge, where they were clipped. The buttons now sit on their own line below the project name and wrap as needed, so both the project name and every agent button stay visible (#188, #189).
+
+### Developer & Governance
+- Restructured the project row in `SkillProjectsSection` from a single horizontal flex line to a two-line stack (name + wrapping chip row), dropped the `shrink-0` that prevented `flex-wrap` from triggering, left-aligned the chips under the project name, and cleaned up the leftover indentation in the chip map block.
+## [1.22.2] - 2026-05-28
+
+### Release Overview
+- A maintenance release that fixes a startup crash and makes skills visible to the Codex CLI again.
+
+### User-facing
+- **Codex skills are visible again** — Skills now deploy to `~/.codex/skills/`, which is where the Codex CLI actually reads user-level skills. Earlier builds wrote them to `~/.agents/skills/`, so installed skills never showed up in Codex; that path is kept as a discovery fallback so existing installs still surface in the Codex tab (#182).
+- **No more startup crash from stale presets** — Fixed a foreign-key panic that could crash the app on launch when a preset still referenced a skill that had been deleted. Stale memberships are now skipped (and logged) during reindex instead of aborting startup (#170).
+
+### Developer & Governance
+- Sync logging is quieter and more useful: dropped the spurious `package-lock` peer-marker noise and now warns when a stale preset membership is skipped, with a regression test covering memberships that point at a missing skill or preset.
+- Reworked both CHANGELOG files and the release-notes template around three audience-aware sections (Release Overview / User-facing / Developer & Governance), replacing the old Added/Changed/Fixed/Removed split.
+- Release notes are now assembled with auto-injected metadata — release date, the previous-tag→current-tag compare URL, and a verification block — and an awk pass strips any empty section so half-filled entries can't leak placeholder headings.
+
+## [1.22.1] - 2026-05-22
+
+### Release Overview
+- This release cleans up two confusing status indicators so the Library cards and Settings agent toggle are readable at a glance.
+
+### User-facing
+- **Library card status indicator** — Removed the small circle in the top-left of each Library skill card. It conflated "synced to any agent" with preset membership, which the green left border already shows; per-agent sync status remains in the bottom-right agent dots.
+- **Discoverable agent toggle in Settings** — The tiny status icon next to each agent has been replaced with a macOS-style switch (green = enabled, gray = disabled). The previous icon looked like a status badge, so users didn't realize they could click it to enable or disable an agent.
+
+## [1.22.0] - 2026-05-21
+
+### User-facing
+- **Skill auto-update** — New **Settings → Skill Auto-Update** section. Pick a background check frequency (hourly / every 6 hours / daily) so the "update available" badge stays current while the app is open, and optionally enable **Apply updates automatically** to pull and apply detected upstream updates without a manual click — off by default; when off, updates are only flagged in the Library. The redundant in-Settings "Check Now" button was removed, since the Library toolbar already has "Check All".
+- **Lobster Agents** now form their own group in the sidebar, separate from coding agents.
+- Applying a preset from the tray menu is no longer blocked while a skill update check is running.
+- **Presets are curation labels** — Adding or removing a skill from a preset no longer immediately changes what is deployed to your agents; deployment happens only when you explicitly apply a preset.
+
+### Developer & governance
+- Reworked the preset model around curation-label semantics: membership edits are decoupled from disk sync, with explicit batch apply modes and a workspace-scoped tray apply path.
+- The background auto-update scheduler polls every 15 minutes to honor the shortest (hourly) interval and to pick up settings changes promptly.
+- Tray preset-apply and update-check use independent locks so the two operations no longer block each other.
+
+## [1.21.0] - 2026-05-18
+
+### Added
+- **Add from Library sheet** — In any workspace, click **+ Add Skills** to open a unified picker: search your central library, toggle target agents with always-visible chips (with select-all / clear shortcuts), and batch-add multiple skills in one click.
+- **Untagged filter pill** in the Library tag-filter row to quickly surface skills that haven't been tagged yet.
+- **Delete from agent cards** — In **Global Workspace**, skills that only live inside an agent's directory (not linked from the central library) can now be deleted right from the card. In **Project Workspaces** the per-card delete button is always visible instead of hover-only.
+- **Activity log bundled with Export Logs** — Install / remove / update / sync operations are recorded locally, and **Settings → Export Logs** now packages them together with recent log files into a single zip — much easier to attach when filing an issue.
+- **Startup timing diagnostics** added to logs to help track down slow Windows launches (#153).
+
+### Changed
+- **Dashboard refocused on library-wide state** — The hero replaces the old "Current Preset: …" framing with total library skills, sync coverage, and the actual count of installed-and-enabled agents. Recent activity now pulls from all managed skills.
+- **Faster Copy-mode sync** — Skip the per-file rewrite when the source hash hasn't changed; large libraries (especially on Windows) now resync noticeably faster (#153).
+
+### Fixed
+- **Global Workspace agent reload could get stuck** — A stale "loaded agent" reference is now cleared on cleanup so switching agents always re-fetches.
+- **Project Workspace skill toggles** behave more reliably after changing the target agent set.
+
+## [1.20.0] - 2026-05-18
+
+### Added
+- **`skills-manager-cli` write commands** — the CLI now lets agents fully manage skills: `install` (local path / git URL / `owner/repo[@skill]` shorthand), `update`, `check`, `remove`, `sync`, `search` (skills.sh marketplace, no API key), `adopt` (pull existing skills from agent directories into the central library), and `tag add/remove/list`. Every command supports `--json`; `remove`, `sync`, and `adopt` support `--dry-run`. `remove` always requires `--yes`.
+- **`presets add-skill` / `remove-skill` CLI commands** — manage which skills belong to a preset from the command line.
+- **`presets deactivate` CLI command** (with `close` / `stop` / `off` / `disable` aliases) — close a preset and tear down its sync targets. When the closed preset is the active one a replacement is applied automatically; when it isn't, the active preset is re-synced so any shared skills keep their sync targets.
+- **`manage-skills` skill** (`assets/manage-skills/SKILL.md`) — drop into `~/.claude/skills/` so Claude Code (and other agents) prefers `skills-manager-cli` over installing skills directly into one agent's directory.
+- **Cmd/Ctrl+R in the app** — refresh skills, presets, and agent status without restarting (ignored while typing in an input).
+
+### Changed
+- **User-facing scenario terminology is now preset terminology** — Tauri commands (`apply_preset_to_default`, etc.), CLI subcommands (`skills-manager-cli presets ...`), CLI JSON fields (`preset_id` / `preset_name`), frontend types, and i18n keys now consistently use `preset`. The CLI keeps `scenarios`, `--scenario`, and `--sync-scenario` as hidden backward-compatible aliases for one release. Internal Rust types, the SQLite schema, and Git Backup metadata still use `scenario` for compatibility.
+- **Enable/disable a skill by preset membership** — `presets add-skill` / `presets remove-skill` are now the supported way to include or exclude a skill from sync. The legacy `enabled` flag is no longer consulted when computing what to sync.
+- **Sidebar preset selection sticks across external switches** — when the CLI or tray menu switches the active preset, the sidebar only follows if you were already viewing the previous active preset. A preset you're browsing manually is no longer yanked away.
+
+### Deprecated
+- **`skills enable` / `skills disable` CLI** — both are now no-ops that print a deprecation notice. Use `presets add-skill` / `presets remove-skill` instead.
+
+### Fixed
+- **`presets close <non-active preset>` no longer breaks the active preset's sync** — previously closing a non-active preset removed sync targets for any skill it shared with the active preset; the active preset is now re-synced afterwards.
+- **`skills disable` no longer secretly re-enables the skill** — the deprecated command used to flip the legacy `enabled` flag back to `true`, the opposite of what was asked. It now leaves the flag alone.
+
+### Removed
+- **SkillsMP AI search** — the third-party `skillsmp.com` integration (API key in Settings, "AI Search" toggle in Install Skills, the `search_skillsmp` Tauri command) has been removed. The free skills.sh marketplace and its keyword search remain. The SkillsMP service was not used by any major agent ecosystem and added a paid third-party dependency without unique value.
+
+## [1.19.3] - 2026-05-17
+
+### Added
+- **Report Issue button (Settings → About)** — one click copies app version, OS, enabled agents, UI language, and a smart excerpt of recent logs to the clipboard, then opens a pre-filled GitHub issue template so you just paste and submit.
+- **Export Logs button (Settings → About)** — bundles the most recent log files (with sensitive paths and tokens sanitized) into a zip in your Downloads folder and reveals it in your file manager so you can drag it straight into an issue.
+- **Crash banner on next launch** — if the previous session crashed, Settings → About now shows a red banner with a one-click report button so unexpected exits don't go unnoticed.
+- **GitHub issue templates** — bug reports and feature requests now have lightweight bilingual templates that guide you to use the buttons above.
+
+### Changed
+- **Production builds now write a log file** (Info level, 5 MB × 3 rotation). User home paths, git credentials, tokens, and email addresses are sanitized before anything is exported or copied. Repeated noisy lines are collapsed so important events stay visible.
+
+### Fixed
+- **Runaway git-fetch loop that pinned CPU at 100%+ and could freeze the window** — a self-driving fetch loop (refresh → fetch → file-watcher → refresh) has been cut; on some macOS setups this also presented as the skill preview going black and only `⌘Q` being able to close the app (#144, #69, #151, #150).
+- **Tray icon visible on Windows / Linux** — the previous all-white tray icon disappeared on light Windows taskbars; non-macOS platforms now use a colored variant while macOS keeps the template-style white icon (#154, #149).
+
+
+
+### Fixed
+- **Codex skills now use the official `~/.agents/skills` location** — Codex reads user-level skills only from `~/.agents/skills` per its official docs, but skills-manager was deploying to `~/.codex/skills` (which Codex never reads) and not scanning `~/.agents/skills`. Both deployment target and discovery are now corrected; skills already at the old `~/.codex/skills` remain visible for backward compatibility (#143, #147).
+- **GitHub Copilot also scans `~/.agents/skills`** — in addition to the existing `~/.copilot/skills` (#147).
+- **Real error message on local install failure** — `[object Object]` no longer shows in the toast when an install fails; the actual error is displayed (#101).
+- **Description in the central list refreshes when SKILL.md changes** — editing `SKILL.md` externally now updates the displayed description without re-import (#92).
+- **No more false "install failed" toast when install actually succeeded** — post-install refresh failures (background scan / state refresh) are now silently logged instead of being surfaced as install errors (#92).
+- **Changing the central repository path twice before restart no longer loses data** — the migration source is now tracked even across multiple path changes within one session (#92).
+- **Multi-variant skill installs prefer the generic version** — when a repo ships several agent-specific variants (`.cursor/skills/<id>`, `.claude/skills/<id>`, …), the installer now consistently picks `.agents/skills/<id>` instead of an arbitrary one (#103).
+
+## [1.19.1] - 2026-05-15
+
+### Fixed
+- **macOS "app is damaged" error on first launch** — Release builds are now ad-hoc signed in CI, so downloading the `.dmg` no longer triggers the Gatekeeper "damaged" warning that forced users to run `xattr -cr` manually (#138).
+- **Black screen when opening a skill detail on older macOS** — The skill detail sheet now uses explicit stacking, fixing a regression where the panel rendered as a black overlay on Monterey/older WKWebView versions (#69, #144).
+- **Importing skills from nested category folders** — `git` skill import now walks nested category directories instead of only looking at top-level folders, so repos that organize skills under subcategories import correctly (#121).
 ## [1.19.0] - 2026-05-13
 
 ### Added
