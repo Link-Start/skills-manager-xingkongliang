@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Release Overview
+- Installing one skill out of a large repository now downloads that skill, not the repository.
+
+### User-facing
+- Installing or updating a skill whose source names a subdirectory now fetches only that directory, using a partial clone and a sparse checkout. Installing `mcp-builder` out of `anthropics/skills` went from 15 MB to 472 KB on disk and over the wire. Several skills from the same repository share one cache, each new one widening it rather than starting over. Anything that can go wrong here — a server that refuses partial clones, a git too old to read the arguments the way we mean them, a subdirectory upstream has since moved — quietly falls back to the full checkout, so this can only make an install faster, never make it fail.
+- A configured proxy no longer defeats the repository cache. The cache refresh passed the proxy setting to `git fetch` in a position git rejects outright, so for proxy users the refresh failed every time and every install and update re-cloned the whole repository from scratch.
+
+### Developer & Governance
+- `clone_repo_ref_scoped` is the single clone entry point; the narrow path is taken only when the caller knows the subdirectory it wants. Repo preview with no subpath, skills.sh locator installs and `resolve_skill_dir`'s repo-wide fallback all still get a whole tree, and use a separate cache slot, so the flows that search a repository are untouched.
+- A narrow checkout is materialized by copying the cache, not by `git clone --local`: cloning from a partial clone makes the source serve objects it does not have and aborts with "could not fetch <oid> from promisor remote".
+- `sparse-checkout set` exits 0 and leaves an empty tree for a path that is not in the repository, so the result is inspected for an actual skill before it is used.
+- In a partial clone `sparse-checkout`, `checkout` and `reset --hard` all reach the network to fetch the blobs they write, so they run under the same timeout and cancel flag as the clone itself.
+
 ## [1.37.1] - 2026-09-07
 
 ### Release Overview

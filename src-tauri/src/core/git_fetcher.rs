@@ -110,12 +110,27 @@ fn canonicalize_clone_url(url: &str) -> String {
 /// canonical form so e.g. `https://github.com/x/y` and `https://github.com/x/y.git`
 /// share the same cache slot.
 fn repo_cache_dir(url: &str) -> PathBuf {
+    repo_cache_dir_for(url, false)
+}
+
+/// Cache slot for a URL. A subpath-scoped checkout gets its own `-sparse` slot
+/// rather than sharing the full one, because the two are not interchangeable:
+/// the flows that need a whole tree (repo preview with no subpath, the skills.sh
+/// locator search, `resolve_skill_dir`'s repo-wide fallback) must never be handed
+/// a checkout holding one directory. A repo used both ways simply keeps two
+/// caches, and the full path keeps behaving exactly as it did before.
+fn repo_cache_dir_for(url: &str, sparse: bool) -> PathBuf {
     let canonical = canonicalize_clone_url(url);
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     let hash = format!("{:x}", hasher.finalize());
     let short = &hash[..16];
-    central_repo::cache_dir().join("repos").join(short)
+    let name = if sparse {
+        format!("{short}-sparse")
+    } else {
+        short.to_string()
+    };
+    central_repo::cache_dir().join("repos").join(name)
 }
 
 struct RepoCacheLock {
@@ -269,17 +284,18 @@ fn try_update_cached_repo(
         cb("Updating cached repository…");
     }
 
+    // `-c` is a *global* git option: `git fetch -c key=value` is rejected with
+    // "unknown switch `c`", so it has to precede the subcommand. It used to sit
+    // after `fetch`, which made every cache refresh fail outright whenever a
+    // proxy was configured — those users re-cloned the whole repository on every
+    // install and update instead of ever reusing the cache.
     let mut fetch_cmd = git_command();
-    fetch_cmd
-        .arg("-C")
-        .arg(cached)
-        .arg("fetch")
-        .arg("--depth")
-        .arg("1");
+    fetch_cmd.arg("-C").arg(cached);
     if let Some(proxy) = proxy_url.filter(|s| !s.is_empty()) {
         fetch_cmd.arg("-c").arg(format!("http.proxy={proxy}"));
         fetch_cmd.arg("-c").arg(format!("https.proxy={proxy}"));
     }
+    fetch_cmd.arg("fetch").arg("--depth").arg("1");
     fetch_cmd.arg("origin");
     if let Some(branch) = branch {
         fetch_cmd.arg(branch);
@@ -332,15 +348,12 @@ fn try_update_cached_repo(
         Some(b) => vec![format!("origin/{b}"), "FETCH_HEAD".to_string()],
         None => vec!["origin/HEAD".to_string()],
     };
+    // Against a full cache this reset is local and returns immediately. Against a
+    // sparse cache it is a partial clone, so writing the worktree lazily fetches
+    // the blobs it needs — which is why it runs under the same timeout and cancel
+    // flag as the fetch above instead of blocking forever on a dead network.
     let reset_ok = targets.iter().any(|target| {
-        git_command()
-            .arg("-C")
-            .arg(cached)
-            .args(["reset", "--hard", target])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+        run_git_watched_at(cached, &["reset", "--hard", target], cancel, &None).is_ok()
     });
     match reset_ok {
         true => Ok(true),
@@ -429,6 +442,359 @@ pub fn clone_repo_ref(
 }
 
 pub fn clone_repo_ref_with_progress(
+    url: &str,
+    branch: Option<&str>,
+    cancel: Option<&Arc<AtomicBool>>,
+    proxy_url: Option<&str>,
+    on_progress: Option<ProgressCallback>,
+) -> Result<PathBuf> {
+    clone_repo_ref_scoped(url, branch, None, cancel, proxy_url, on_progress)
+}
+
+/// Clone `url`, narrowed to `subpath` when one is known.
+///
+/// With a subpath this fetches only that directory (`--filter=blob:none` plus a
+/// sparse-checkout), which is the difference between downloading a repository and
+/// downloading one skill — measured at 15 MB versus 472 KB for a single skill out
+/// of `anthropics/skills`. Every way that can fail — a server with
+/// `uploadpack.allowFilter` off, a git too old to read the sparse arguments the
+/// way we mean them, a subpath that upstream has since moved — falls back to the
+/// full checkout, so the narrow path can only ever be faster, never the reason an
+/// install stops working.
+///
+/// Pass `None` for `subpath` whenever the caller needs to search the repository
+/// rather than read one known directory.
+pub fn clone_repo_ref_scoped(
+    url: &str,
+    branch: Option<&str>,
+    subpath: Option<&str>,
+    cancel: Option<&Arc<AtomicBool>>,
+    proxy_url: Option<&str>,
+    on_progress: Option<ProgressCallback>,
+) -> Result<PathBuf> {
+    if let Some(subpath) = sparse_pattern(subpath) {
+        match clone_repo_sparse(url, branch, &subpath, cancel, proxy_url, &on_progress) {
+            Ok(dir) => return Ok(dir),
+            Err(e) if is_cancellation(&e) => return Err(e),
+            Err(e) => {
+                log::info!(
+                    "narrow clone of '{subpath}' from {url} unavailable, using a full checkout: {e}"
+                );
+            }
+        }
+    }
+
+    clone_repo_full(url, branch, cancel, proxy_url, on_progress)
+}
+
+/// Whether an error is a user cancellation rather than a fault worth retrying
+/// differently.
+fn is_cancellation(err: &anyhow::Error) -> bool {
+    let message = err.to_string();
+    message.contains("cancelled") || message.contains("canceled")
+}
+
+/// Turn a stored subpath into a sparse-checkout pattern, or `None` when it is not
+/// one we are willing to hand to git. Anything rejected here just means a full
+/// checkout, so this can afford to be strict.
+fn sparse_pattern(subpath: Option<&str>) -> Option<String> {
+    let raw = subpath?.trim().replace('\\', "/");
+    let trimmed = raw.trim_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Clone only `subpath` out of `url`, reusing (and widening) the sparse cache slot.
+fn clone_repo_sparse(
+    url: &str,
+    branch: Option<&str>,
+    subpath: &str,
+    cancel: Option<&Arc<AtomicBool>>,
+    proxy_url: Option<&str>,
+    on_progress: &Option<ProgressCallback>,
+) -> Result<PathBuf> {
+    let cached_dir = repo_cache_dir_for(url, true);
+    let _cache_lock = lock_repo_cache(&cached_dir, on_progress)?;
+
+    let mut reusable = false;
+    if cached_dir.exists() {
+        match try_update_cached_repo(&cached_dir, url, branch, proxy_url, cancel, on_progress) {
+            // One cache slot serves every skill installed from this repo, so a
+            // second skill widens the sparse set instead of replacing it. That
+            // union is the reason the slot cannot simply be keyed by subpath.
+            Ok(true) => {
+                reusable = ensure_sparse_path(&cached_dir, subpath, cancel, on_progress).is_ok()
+            }
+            Ok(false) => {}
+            Err(e) => return Err(e),
+        }
+    }
+
+    if !reusable {
+        let _ = std::fs::remove_dir_all(&cached_dir);
+        sparse_clone_into(
+            &cached_dir,
+            url,
+            branch,
+            subpath,
+            cancel,
+            proxy_url,
+            on_progress,
+        )
+        .inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&cached_dir);
+        })?;
+    }
+
+    // `sparse-checkout set` exits 0 and leaves an empty tree when the path does
+    // not exist upstream, so the result must be inspected rather than trusted.
+    // Demanding an actual skill (not merely a non-empty directory) is what keeps
+    // `resolve_skill_dir`'s repo-wide fallback alive: when upstream has moved a
+    // skill out of its recorded subpath and left something else there, this fails
+    // and the full checkout that the locator search needs is fetched instead.
+    if !sparse_checkout_holds_a_skill(&cached_dir, subpath) {
+        bail!("'{subpath}' holds no skill in the narrow checkout of {url}");
+    }
+
+    copy_cached_repo(&cached_dir, cancel)
+}
+
+fn sparse_clone_into(
+    dest: &Path,
+    url: &str,
+    branch: Option<&str>,
+    subpath: &str,
+    cancel: Option<&Arc<AtomicBool>>,
+    proxy_url: Option<&str>,
+    on_progress: &Option<ProgressCallback>,
+) -> Result<()> {
+    if let Some(cb) = on_progress {
+        cb("Fetching only the requested skill directory…");
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut command = git_command();
+    command
+        .arg("clone")
+        .arg("--filter=blob:none")
+        .arg("--no-checkout")
+        .arg("--sparse")
+        .arg("--depth")
+        .arg("1");
+    // `git clone -c` applies the value before the initial fetch, so unlike
+    // `git fetch` this really does route the clone through the proxy.
+    if let Some(proxy) = proxy_url.filter(|s| !s.is_empty()) {
+        command.arg("-c").arg(format!("http.proxy={proxy}"));
+        command.arg("-c").arg(format!("https.proxy={proxy}"));
+    }
+    if let Some(branch) = branch {
+        command.arg("--branch").arg(branch);
+    }
+    command.arg("--progress").arg(url).arg(dest);
+    run_git_watched(command, cancel, on_progress)?;
+
+    // `--cone` is explicit because cone mode is only the default on newer git,
+    // and the non-cone reading of the same argument is a gitignore-style pattern
+    // that would not bring the directory's contents with it.
+    run_git_watched_at(
+        dest,
+        &["sparse-checkout", "set", "--cone", subpath],
+        cancel,
+        on_progress,
+    )?;
+    run_git_watched_at(dest, &["checkout"], cancel, on_progress)?;
+    Ok(())
+}
+
+/// Add `subpath` to the cache's sparse set if it is not already there.
+fn ensure_sparse_path(
+    cached: &Path,
+    subpath: &str,
+    cancel: Option<&Arc<AtomicBool>>,
+    on_progress: &Option<ProgressCallback>,
+) -> Result<()> {
+    let listed = run_git_stdout(cached, &["sparse-checkout", "list"])?;
+    if listed.lines().any(|line| line.trim() == subpath) {
+        return Ok(());
+    }
+    run_git_watched_at(
+        cached,
+        &["sparse-checkout", "add", subpath],
+        cancel,
+        on_progress,
+    )
+}
+
+/// Whether the narrow checkout actually produced a skill at (or below) `subpath`.
+fn sparse_checkout_holds_a_skill(cached: &Path, subpath: &str) -> bool {
+    let root = cached.join(subpath);
+    if !root.is_dir() {
+        return false;
+    }
+    if skill_metadata::is_valid_skill_dir(&root) {
+        return true;
+    }
+    // A subpath may legitimately name a container of skills (`.../tree/main/skills`),
+    // which the preview flow then enumerates. The tree is one directory deep at
+    // this point, so walking it costs nothing.
+    walkdir::WalkDir::new(&root)
+        .max_depth(4)
+        .into_iter()
+        .flatten()
+        .any(|entry| entry.file_type().is_dir() && skill_metadata::is_valid_skill_dir(entry.path()))
+}
+
+/// Materialize an install checkout from a sparse cache by copying it.
+///
+/// `git clone --local` cannot be used here. Cloning from a partial clone asks the
+/// source to serve objects it does not have, and git aborts with "could not fetch
+/// <oid> from promisor remote", taking the whole install with it. A plain copy
+/// keeps the promisor and sparse configuration intact, and is cheap precisely
+/// because a sparse cache holds one skill instead of a repository.
+fn copy_cached_repo(cached: &Path, cancel: Option<&Arc<AtomicBool>>) -> Result<PathBuf> {
+    let temp_dir =
+        std::env::temp_dir().join(format!("{CLONE_TEMP_PREFIX}{}", uuid::Uuid::new_v4()));
+    match copy_dir_contents(cached, &temp_dir, cancel) {
+        Ok(()) => Ok(temp_dir),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            Err(e)
+        }
+    }
+}
+
+/// Recursive copy that skips symlinks, so it can never follow a link out of the
+/// cache. Nothing downstream misses them: the installer drops symlinks, and
+/// `content_hash` counts only regular files.
+fn copy_dir_contents(src: &Path, dst: &Path, cancel: Option<&Arc<AtomicBool>>) -> Result<()> {
+    if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+        bail!("Installation cancelled");
+    }
+    std::fs::create_dir_all(dst).with_context(|| format!("Failed to create {}", dst.display()))?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_contents(&entry.path(), &target, cancel)?;
+        } else {
+            std::fs::copy(entry.path(), &target).with_context(|| {
+                format!(
+                    "Failed to copy {} to {}",
+                    entry.path().display(),
+                    target.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// `git -C <dir> <args…>` under the shared cancel/timeout policy.
+///
+/// These are not local-only commands. In a partial clone both `sparse-checkout`
+/// and `checkout` fetch the blobs they are about to write, so they block on the
+/// network exactly like a clone does and have to be just as cancellable — the
+/// reason this exists rather than a plain `Command::output()`.
+fn run_git_watched_at(
+    dir: &Path,
+    args: &[&str],
+    cancel: Option<&Arc<AtomicBool>>,
+    on_progress: &Option<ProgressCallback>,
+) -> Result<()> {
+    let mut command = git_command();
+    command.arg("-C").arg(dir).args(args);
+    run_git_watched(command, cancel, on_progress)
+}
+
+fn run_git_stdout(dir: &Path, args: &[&str]) -> Result<String> {
+    let output = git_command()
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .with_context(|| format!("Failed to run git {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Run a git subprocess under the shared cancel/timeout policy, forwarding its
+/// stderr to `on_progress`.
+///
+/// The full-clone loop below is deliberately left inline rather than reshaped to
+/// call this: it has no end-to-end test coverage, so the safe move is to add a
+/// path beside it, not to rewrite it.
+fn run_git_watched(
+    mut command: Command,
+    cancel: Option<&Arc<AtomicBool>>,
+    on_progress: &Option<ProgressCallback>,
+) -> Result<()> {
+    let mut child = command
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to start git")?;
+
+    let (stderr_rx, stderr_thread) =
+        spawn_stderr_collector(child.stderr.take(), on_progress.is_some());
+    let deadline = Instant::now() + Duration::from_secs(CLONE_TIMEOUT_SECS);
+
+    loop {
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("Installation cancelled");
+        }
+
+        if let Some(ref cb) = on_progress {
+            while let Ok(line) = stderr_rx.try_recv() {
+                if !is_ssh_warning(&line) && !line.trim().is_empty() {
+                    cb(&line);
+                }
+            }
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let collected = stderr_thread.join().unwrap_or_default();
+                if status.success() {
+                    return Ok(());
+                }
+                bail!("git exited with {}: {}", status, collected.trim());
+            }
+            Ok(None) => {
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    bail!("git timed out after {}s", CLONE_TIMEOUT_SECS);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => bail!("Failed to wait for git: {e}"),
+        }
+    }
+}
+
+fn clone_repo_full(
     url: &str,
     branch: Option<&str>,
     cancel: Option<&Arc<AtomicBool>>,
@@ -1647,6 +2013,211 @@ mod tests {
         cleanup_temp(&dir);
         assert!(!dir.exists());
     }
+    // ── narrow (partial + sparse) clone ──
+
+    #[test]
+    fn sparse_slot_is_separate_from_the_full_slot() {
+        let url = "https://github.com/acme/skills";
+        assert_ne!(
+            repo_cache_dir_for(url, true),
+            repo_cache_dir_for(url, false)
+        );
+        assert_eq!(repo_cache_dir_for(url, false), repo_cache_dir(url));
+        // Both slots still canonicalize the URL the same way.
+        assert_eq!(
+            repo_cache_dir_for(url, true),
+            repo_cache_dir_for("https://github.com/acme/skills.git/", true)
+        );
+    }
+
+    #[test]
+    fn sparse_pattern_accepts_plain_subpaths_and_rejects_the_rest() {
+        assert_eq!(
+            sparse_pattern(Some("skills/foo")).as_deref(),
+            Some("skills/foo")
+        );
+        assert_eq!(
+            sparse_pattern(Some("/skills/foo/")).as_deref(),
+            Some("skills/foo")
+        );
+        assert_eq!(
+            sparse_pattern(Some("skills\\foo")).as_deref(),
+            Some("skills/foo")
+        );
+
+        // Nothing to narrow to, or something we refuse to hand to git. Every one
+        // of these means "use the full checkout", never an error.
+        assert_eq!(sparse_pattern(None), None);
+        assert_eq!(sparse_pattern(Some("")), None);
+        assert_eq!(sparse_pattern(Some("   ")), None);
+        assert_eq!(sparse_pattern(Some("/")), None);
+        assert_eq!(sparse_pattern(Some("../escape")), None);
+        assert_eq!(sparse_pattern(Some("skills/../../etc")), None);
+        assert_eq!(sparse_pattern(Some("skills/./foo")), None);
+        assert_eq!(sparse_pattern(Some("skills//foo")), None);
+    }
+
+    #[test]
+    fn sparse_checkout_holds_a_skill_distinguishes_a_skill_from_leftovers() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        // Missing entirely — what `sparse-checkout set` leaves behind when the
+        // path does not exist upstream, silently and with exit code 0.
+        assert!(!sparse_checkout_holds_a_skill(root, "skills/gone"));
+
+        // Present but empty.
+        fs::create_dir_all(root.join("skills/empty")).unwrap();
+        assert!(!sparse_checkout_holds_a_skill(root, "skills/empty"));
+
+        // Non-empty but not a skill and holding none: upstream reorganized and
+        // left something else at the recorded path. This must fail so the caller
+        // falls back to a full checkout, where the locator search can find the
+        // skill at its new home.
+        fs::create_dir_all(root.join("skills/moved")).unwrap();
+        fs::write(root.join("skills/moved/README.md"), "moved elsewhere").unwrap();
+        assert!(!sparse_checkout_holds_a_skill(root, "skills/moved"));
+
+        // A skill.
+        fs::create_dir_all(root.join("skills/real")).unwrap();
+        fs::write(root.join("skills/real/SKILL.md"), "---\nname: real\n---").unwrap();
+        assert!(sparse_checkout_holds_a_skill(root, "skills/real"));
+
+        // A container of skills, which is what a `tree/main/skills` URL narrows
+        // to and what the repo preview then enumerates.
+        fs::create_dir_all(root.join("group/nested/inner")).unwrap();
+        fs::write(
+            root.join("group/nested/inner/SKILL.md"),
+            "---\nname: inner\n---",
+        )
+        .unwrap();
+        assert!(sparse_checkout_holds_a_skill(root, "group"));
+    }
+
+    #[test]
+    fn copy_dir_contents_copies_nested_files() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(src.join("a/b")).unwrap();
+        fs::write(src.join("top.txt"), "top").unwrap();
+        fs::write(src.join("a/b/deep.txt"), "deep").unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_dir_contents(&src, &dst, None).unwrap();
+
+        assert_eq!(fs::read_to_string(dst.join("top.txt")).unwrap(), "top");
+        assert_eq!(
+            fs::read_to_string(dst.join("a/b/deep.txt")).unwrap(),
+            "deep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_contents_skips_symlinks_instead_of_following_them_out() {
+        let tmp = tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "not ours").unwrap();
+
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("kept.txt"), "kept").unwrap();
+        std::os::unix::fs::symlink(&outside, src.join("escape")).unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_dir_contents(&src, &dst, None).unwrap();
+
+        assert!(dst.join("kept.txt").exists());
+        assert!(
+            !dst.join("escape").exists(),
+            "a symlink out of the cache must not be followed into the checkout"
+        );
+    }
+
+    #[test]
+    fn copy_dir_contents_honours_cancellation() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("a.txt"), "a").unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(true));
+        let err = copy_dir_contents(&src, &tmp.path().join("dst"), Some(&cancel)).unwrap_err();
+        assert!(is_cancellation(&err), "got {err}");
+    }
+
+    // ── narrow clone, end to end (network; run with `-- --ignored`) ──
+
+    const SPARSE_REPO: &str = "https://github.com/anthropics/skills";
+    const SPARSE_SUBPATH: &str = "skills/mcp-builder";
+    const SPARSE_SIBLING: &str = "skills/canvas-design";
+
+    #[test]
+    #[ignore = "hits the network"]
+    fn narrow_clone_fetches_one_skill_and_leaves_its_siblings_behind() {
+        let tmp = tempdir().unwrap();
+        central_repo::set_test_base_dir_override(Some(tmp.path().to_path_buf()));
+
+        let checkout =
+            clone_repo_ref_scoped(SPARSE_REPO, None, Some(SPARSE_SUBPATH), None, None, None)
+                .expect("narrow clone must succeed against a filter-capable remote");
+
+        assert!(
+            checkout.join(SPARSE_SUBPATH).join("SKILL.md").is_file(),
+            "the requested skill must be checked out"
+        );
+        assert!(
+            !checkout.join(SPARSE_SIBLING).exists(),
+            "a sibling skill must not be downloaded — that is the whole point"
+        );
+        assert!(
+            repo_cache_dir_for(SPARSE_REPO, true).exists(),
+            "the narrow checkout must come from the sparse cache slot"
+        );
+        assert!(
+            !repo_cache_dir_for(SPARSE_REPO, false).exists(),
+            "the full cache slot must be left untouched"
+        );
+
+        // A second skill from the same repo widens the shared sparse set rather
+        // than replacing it, so the first one survives.
+        let second =
+            clone_repo_ref_scoped(SPARSE_REPO, None, Some(SPARSE_SIBLING), None, None, None)
+                .expect("a second skill must reuse and widen the cache");
+        assert!(second.join(SPARSE_SIBLING).join("SKILL.md").is_file());
+        assert!(second.join(SPARSE_SUBPATH).join("SKILL.md").is_file());
+
+        cleanup_temp(&checkout);
+        cleanup_temp(&second);
+        central_repo::set_test_base_dir_override(None);
+    }
+
+    #[test]
+    #[ignore = "hits the network"]
+    fn a_subpath_that_no_longer_exists_falls_back_to_the_full_checkout() {
+        let tmp = tempdir().unwrap();
+        central_repo::set_test_base_dir_override(Some(tmp.path().to_path_buf()));
+
+        // `sparse-checkout set` exits 0 on a path that is not in the tree, so
+        // without the post-checkout inspection this would hand back an empty
+        // directory instead of a repository the locator search can walk.
+        let checkout = clone_repo_ref_scoped(
+            SPARSE_REPO,
+            None,
+            Some("skills/this-skill-does-not-exist"),
+            None,
+            None,
+            None,
+        )
+        .expect("a stale subpath must degrade to a full checkout, not an error");
+
+        assert!(
+            checkout.join(SPARSE_SUBPATH).join("SKILL.md").is_file(),
+            "the fallback must be a full checkout the caller can search"
+        );
+
+        cleanup_temp(&checkout);
+        central_repo::set_test_base_dir_override(None);
+    }
 }
-
-

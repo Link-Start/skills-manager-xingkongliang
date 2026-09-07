@@ -5,6 +5,21 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 发布概览
+- 从大仓库里装一个 skill，现在下载的是那个 skill，不是整个仓库。
+
+### 用户可见更新
+- 安装或更新来源指向子目录的 skill 时，改为只拉取那一个目录（partial clone + sparse-checkout）。从 `anthropics/skills` 装 `mcp-builder`，占用与流量从 15 MB 降到 472 KB。同一仓库的多个 skill 共用一份缓存，装第二个只是把范围扩大，不会重来。这条路上任何一环出问题——服务端不支持 partial clone、git 版本太老、子目录已被上游挪走——都会静默退回完整检出，所以它只可能让安装更快，不会成为安装失败的原因。
+- 配了代理不再让仓库缓存失效。此前缓存刷新把代理配置传给 `git fetch` 的位置是 git 直接拒绝的，代理用户的刷新每次都失败，每次安装和更新都在从头重新克隆整个仓库。
+
+### 开发者与治理更新
+- `clone_repo_ref_scoped` 成为唯一的克隆入口，只有调用方明确知道要哪个子目录时才走窄路径。不带 subpath 的仓库预览、skills.sh 按 id 定位安装、`resolve_skill_dir` 的全仓兜底，仍然拿到完整目录树，并且用独立的缓存槽——需要搜索整个仓库的流程一行没动。
+- 窄检出通过拷贝缓存来产出，而不是 `git clone --local`：从 partial clone 克隆会让源仓库去提供它自己没有的对象，git 直接以 `could not fetch <oid> from promisor remote` 中止。
+- `sparse-checkout set` 对仓库里不存在的路径是 exit 0 加一棵空树，所以结果要先验证确实落到了一个 skill 才使用。
+- 在 partial clone 里，`sparse-checkout`、`checkout` 和 `reset --hard` 都会为写入的文件去网络取 blob，因此它们和克隆本身共用同一套超时与取消控制。
+
 ## [1.37.1] - 2026-09-07
 
 ### 发布概览
