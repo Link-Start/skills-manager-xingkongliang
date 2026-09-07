@@ -5,13 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.37.1] - 2026-09-07
 
 ### Release Overview
-- More compact toolbars in the library, the global and lobster workspaces, and project pages.
+- Toolbar fixes in the library, the global and lobster workspaces, and project pages: multi-select moves into the main toolbar, and the library toolbar stops breaking its own labels apart at narrow widths.
 
 ### User-facing
+- The library toolbar no longer wraps its filter labels mid-word. Below roughly 1100px of toolbar width the segmented buttons collapsed to one character per line and the search field was squeezed from 280px down to 65px. Entering select mode made it visible rather than causing it: the longer "Cancel selection" label pushed an already borderline row over the edge. Segmented labels now stay on one line on every page, and the number of toolbar rows no longer changes when you toggle select mode.
 - Multi-select now shares the right-hand toolbar border with the backup, update, refresh and view controls, the same way in the library, the global and lobster workspaces, and project pages. A divider separates the view controls from selection mode, while the labelled selection button keeps its independent active state.
+
+### Developer & Governance
+- `.app-segmented-button` carries `whitespace-nowrap`, so a segmented label can no longer break on any page. `ProjectDetail` and `WorkspaceView` already pinned their segmented controls with `shrink-0`; `MySkills` was the only view missing it.
 
 ## [1.37.0] - 2026-09-06
 
