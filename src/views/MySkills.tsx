@@ -1150,8 +1150,7 @@ export function MySkills() {
 
         </div>
 
-        {/* Git status, update actions, view switch and select mode wrap as one
-            block: splitting them would strand a lone button on its own row. */}
+        {/* Keep all library actions in one toolbar so they wrap together. */}
         <div className="flex items-center gap-3">
           <div className="app-segmented app-toolbar-segmented shrink-0">
             {(() => {
@@ -1189,6 +1188,7 @@ export function MySkills() {
               <RotateCcw className={cn("h-3.5 w-3.5", batchUpdating && "animate-spin")} />
               {t("mySkills.updateActions.updateAvailable", { count: availableUpdateCount })}
             </button>
+            <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 self-center bg-border-subtle" />
             <button
               onClick={() => setViewMode("grid")}
               className={cn(
@@ -1207,19 +1207,22 @@ export function MySkills() {
             >
               <List className="h-4 w-4" />
             </button>
-          </div>
 
-          {/* Selection is a mode, not a third view — keep it out of the view switcher. */}
-          <button
-            onClick={() => isMultiSelect ? exitMultiSelect() : setIsMultiSelect(true)}
-            className={cn(
-              "app-toolbar-button app-toolbar-button-secondary",
-              isMultiSelect && "border-border bg-surface-active text-secondary hover:bg-surface-active"
-            )}
-          >
-            <SquareCheck className="h-4 w-4" />
-            {isMultiSelect ? t("mySkills.cancelSelect") : t("mySkills.selectMode")}
-          </button>
+            {/* Selection can stay active in either view. */}
+            <span aria-hidden="true" className="mx-1 h-5 w-px shrink-0 self-center bg-border-subtle" />
+            <button
+              type="button"
+              aria-pressed={isMultiSelect}
+              onClick={() => isMultiSelect ? exitMultiSelect() : setIsMultiSelect(true)}
+              className={cn(
+                "app-segmented-button inline-flex items-center gap-1.5 hover:bg-surface-hover focus-visible:ring-2 focus-visible:ring-border",
+                isMultiSelect && "app-segmented-button-active hover:bg-surface-active hover:text-secondary"
+              )}
+            >
+              <SquareCheck className="h-4 w-4" />
+              {isMultiSelect ? t("mySkills.cancelSelect") : t("mySkills.selectMode")}
+            </button>
+          </div>
         </div>
       </div>
 

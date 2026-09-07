@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Release Overview
+- A more compact skill library toolbar.
+
+### User-facing
+- Multi-select now shares the right-hand toolbar border with backup, update and view controls. Dividers distinguish the view controls and selection mode, while the labelled selection button keeps its independent active state.
+
 ## [1.37.0] - 2026-09-06
 
 ### Release Overview
