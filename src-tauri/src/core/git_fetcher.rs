@@ -2520,6 +2520,15 @@ mod tests {
         seed_cache_slot(root, "stale", 4096, now - Duration::from_secs(86_400 * 30));
         seed_cache_slot(root, "fresh", 4096, now);
 
+        // Make the two signals disagree on purpose, or this test proves nothing:
+        // adding an entry to `stale` bumps that directory's own mtime to now, so
+        // by directory mtime `stale` looks like the *most* recently used slot,
+        // while the only file in it is a month old. Ranking on the directory
+        // therefore evicts `fresh` and keeps `stale` — the exact inversion this
+        // guards against. An empty directory adds no bytes and no file mtime, so
+        // it cannot move the correct signal.
+        fs::create_dir_all(root.join("stale").join("refs")).unwrap();
+
         prune_cache_root(root, &root.join("nothing"), 6000);
 
         assert!(!root.join("stale").exists(), "the stale slot goes first");
