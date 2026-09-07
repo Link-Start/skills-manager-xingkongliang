@@ -8,10 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Release Overview
-- A more compact skill library toolbar.
+- More compact toolbars in the library, the global and lobster workspaces, and project pages.
 
 ### User-facing
-- Multi-select now shares the right-hand toolbar border with backup, update and view controls. Dividers distinguish the view controls and selection mode, while the labelled selection button keeps its independent active state.
+- Multi-select now shares the right-hand toolbar border with the backup, update, refresh and view controls, the same way in the library, the global and lobster workspaces, and project pages. A divider separates the view controls from selection mode, while the labelled selection button keeps its independent active state.
 
 ## [1.37.0] - 2026-09-06
 
