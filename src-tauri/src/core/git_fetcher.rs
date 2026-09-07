@@ -133,8 +133,114 @@ fn repo_cache_dir_for(url: &str, sparse: bool) -> PathBuf {
     central_repo::cache_dir().join("repos").join(name)
 }
 
+/// Upper bound on the whole repo cache.
+///
+/// A backstop, not a quota. Nothing ever deleted a cache slot before, so a
+/// library built from many repositories accumulated one checkout per repository
+/// and kept it forever — measured at 569 MB across 48 repositories on an
+/// ordinary machine, the oldest untouched for four months.
+const REPO_CACHE_LIMIT_BYTES: u64 = 1024 * 1024 * 1024;
+
 struct RepoCacheLock {
     _file: File,
+}
+
+/// Delete least-recently-used cache slots until the cache is back under the limit.
+///
+/// Called only where a slot is about to be cloned fresh. Refreshing an existing
+/// slot adds a delta; a new repository adds a whole checkout, so that is where the
+/// growth comes from — and it keeps a batch update from paying for the walk once
+/// per repository (the walk is ~0.8s over a 569 MB cache).
+///
+/// `keep` is the slot the caller is about to write. A slot another install holds
+/// is skipped rather than waited for: deleting a checkout from under a running
+/// install would break it. The lock *file* is deliberately left behind — unlinking
+/// it while someone waits on it would let two installs each hold a lock on a
+/// different inode for the same slot.
+fn prune_repo_cache(keep: &Path) {
+    prune_cache_root(
+        &central_repo::cache_dir().join("repos"),
+        keep,
+        REPO_CACHE_LIMIT_BYTES,
+    )
+}
+
+/// Takes its root and limit rather than reading them from the central config, so
+/// it is a plain function of the directory in front of it — testable without
+/// touching process-global state that parallel tests would fight over.
+fn prune_cache_root(root: &Path, keep: &Path, limit: u64) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+
+    let mut slots: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    let mut total: u64 = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let (size, used) = slot_stats(&path);
+        total = total.saturating_add(size);
+        slots.push((path, size, used));
+    }
+
+    if total <= limit {
+        return;
+    }
+
+    slots.sort_by_key(|(_, _, used)| *used);
+    for (path, size, _) in slots {
+        if total <= limit {
+            break;
+        }
+        if path == keep {
+            continue;
+        }
+        let lock_path = path.with_extension("lock");
+        let Ok(file) = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+        else {
+            continue;
+        };
+        if file.try_lock_exclusive().is_err() {
+            continue;
+        }
+        if std::fs::remove_dir_all(&path).is_ok() {
+            log::info!("pruned repo cache slot {}", path.display());
+            total = total.saturating_sub(size);
+        }
+    }
+}
+
+/// Bytes in a cache slot, and when anything inside it was last written.
+///
+/// The recency half cannot come from the slot directory's own mtime: a fetch
+/// writes objects deep inside `.git`, never in the slot root, so that mtime stays
+/// at creation time and "least recently used" would silently mean "oldest",
+/// evicting a repository that is updated weekly before one nobody has touched
+/// since it was cloned. The size walk visits every file anyway, so the real
+/// answer is free.
+fn slot_stats(dir: &Path) -> (u64, std::time::SystemTime) {
+    let mut size = 0u64;
+    let mut newest = std::time::UNIX_EPOCH;
+    for entry in walkdir::WalkDir::new(dir).into_iter().flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        size = size.saturating_add(meta.len());
+        if let Ok(modified) = meta.modified() {
+            newest = newest.max(modified);
+        }
+    }
+    (size, newest)
 }
 
 fn lock_repo_cache(
@@ -570,6 +676,7 @@ fn clone_repo_sparse(
 
     if !reusable {
         let _ = std::fs::remove_dir_all(&cached_dir);
+        prune_repo_cache(&cached_dir);
         sparse_clone_into(&cached_dir, url, branch, cancel, proxy_url, on_progress).inspect_err(
             |_| {
                 let _ = std::fs::remove_dir_all(&cached_dir);
@@ -673,12 +780,37 @@ fn sparse_checkout_holds_a_skill(cached: &Path, subpath: &str) -> bool {
 fn copy_cached_repo(cached: &Path, cancel: Option<&Arc<AtomicBool>>) -> Result<PathBuf> {
     let temp_dir =
         std::env::temp_dir().join(format!("{CLONE_TEMP_PREFIX}{}", uuid::Uuid::new_v4()));
-    match copy_dir_contents(cached, &temp_dir, cancel) {
-        Ok(()) => Ok(temp_dir),
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            Err(e)
-        }
+    if let Err(e) = copy_dir_contents(cached, &temp_dir, cancel) {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(e);
+    }
+    detach_from_promisor(&temp_dir);
+    Ok(temp_dir)
+}
+
+/// Cut an install checkout loose from the promisor remote it was copied from.
+///
+/// This is the boundary that keeps the narrow clone from becoming a permanent tax
+/// on everyone who touches this code. A partial clone carries IOUs: a git command
+/// that reaches an object we never fetched silently becomes a network round trip,
+/// which can hang, needs a proxy, and needs credentials. Callers run git against
+/// the checkout we hand back — `checkout_revision`, `get_head_revision`, whatever
+/// gets added next — and nothing in the type system would tell them that.
+///
+/// Dropping the config makes a missing object an immediate error instead, exactly
+/// as it has always been in a shallow full checkout. So the network-capable
+/// surface stays where it can be reviewed: the three cache commands in this file,
+/// all of which go through `run_git_watched_at`. Everything handed outside this
+/// module is provably local.
+fn detach_from_promisor(repo_dir: &Path) {
+    for key in ["remote.origin.promisor", "remote.origin.partialclonefilter"] {
+        let _ = git_command()
+            .arg("-C")
+            .arg(repo_dir)
+            .args(["config", "--unset", key])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -828,6 +960,7 @@ fn clone_repo_full(
 
     // Remove any leftover partial clone.
     let _ = std::fs::remove_dir_all(&cached_dir);
+    prune_repo_cache(&cached_dir);
 
     let timeout = Duration::from_secs(CLONE_TIMEOUT_SECS);
     let mut system_git_stderr: Option<String> = None;
@@ -2208,6 +2341,19 @@ mod tests {
             !repo_cache_dir_for(SPARSE_REPO, false).exists(),
             "the full cache slot must be left untouched"
         );
+        // End to end, over a real partial clone: what the caller receives is not
+        // one. Callers run plain git against this directory, so it has to be
+        // incapable of wandering onto the network behind their back.
+        let promisor = Command::new("git")
+            .arg("-C")
+            .arg(&checkout)
+            .args(["config", "--get", "remote.origin.promisor"])
+            .output()
+            .unwrap();
+        assert!(
+            !promisor.status.success(),
+            "the install checkout must be detached from the promisor remote"
+        );
 
         // A second skill from the same repo reuses the cache — its objects are
         // what cost something — and re-scopes the worktree to itself.
@@ -2273,5 +2419,160 @@ mod tests {
 
         cleanup_temp(&checkout);
         central_repo::set_test_base_dir_override(None);
+    }
+    // ── the promisor boundary ──
+
+    /// The rule this locks in: nothing handed outside this module is a partial
+    /// clone. If someone removes the detach, callers' plain `git` calls silently
+    /// become network calls again — which is the maintenance cost the narrow
+    /// clone would otherwise impose on every future change.
+    #[test]
+    fn an_install_checkout_is_never_left_attached_to_a_promisor_remote() {
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .arg("init")
+            .status()
+            .is_ok_and(|s| s.success()));
+        for (key, value) in [
+            ("remote.origin.url", "https://example.invalid/x.git"),
+            ("remote.origin.promisor", "true"),
+            ("remote.origin.partialclonefilter", "blob:none"),
+        ] {
+            Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["config", key, value])
+                .status()
+                .unwrap();
+        }
+
+        detach_from_promisor(&repo);
+
+        for key in ["remote.origin.promisor", "remote.origin.partialclonefilter"] {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["config", "--get", key])
+                .output()
+                .unwrap();
+            assert!(
+                !out.status.success(),
+                "{key} must be gone, still reads {}",
+                String::from_utf8_lossy(&out.stdout).trim()
+            );
+        }
+        // The remote itself stays: it is what `source_ref_resolved` reports and
+        // what a later fetch of this checkout would use.
+        let url = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["config", "--get", "remote.origin.url"])
+            .output()
+            .unwrap();
+        assert!(url.status.success());
+    }
+
+    // ── cache prune ──
+
+    /// Writes the marker deep inside the slot, the way git writes fetched objects,
+    /// so the recency signal has to come from a walk rather than the slot's own
+    /// directory mtime.
+    fn seed_cache_slot(root: &Path, name: &str, bytes: usize, used: std::time::SystemTime) {
+        let deep = root.join(name).join(".git").join("objects");
+        fs::create_dir_all(&deep).unwrap();
+        let blob = deep.join("pack");
+        fs::write(&blob, vec![b'x'; bytes]).unwrap();
+        File::options()
+            .write(true)
+            .open(&blob)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(used))
+            .unwrap();
+    }
+
+    #[test]
+    fn prune_is_a_no_op_while_the_cache_fits() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        seed_cache_slot(root, "a", 1024, std::time::UNIX_EPOCH);
+
+        prune_cache_root(root, &root.join("nothing"), 8192);
+
+        assert!(
+            root.join("a").exists(),
+            "a cache under the limit is left alone"
+        );
+    }
+
+    #[test]
+    fn prune_ranks_by_the_newest_file_inside_a_slot_not_the_slot_itself() {
+        // Both slots were created now; only their contents differ in age. Ranking
+        // on the directory's own mtime cannot tell them apart, which is exactly
+        // the mistake this guards against.
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        let now = std::time::SystemTime::now();
+        seed_cache_slot(root, "stale", 4096, now - Duration::from_secs(86_400 * 30));
+        seed_cache_slot(root, "fresh", 4096, now);
+
+        prune_cache_root(root, &root.join("nothing"), 6000);
+
+        assert!(!root.join("stale").exists(), "the stale slot goes first");
+        assert!(root.join("fresh").exists(), "the recently used slot stays");
+    }
+
+    #[test]
+    fn prune_evicts_the_least_recently_used_and_spares_the_slot_being_written() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        let now = std::time::SystemTime::now();
+        let day = Duration::from_secs(86_400);
+        seed_cache_slot(root, "oldest", 4096, now - day * 30);
+        seed_cache_slot(root, "newer", 4096, now - day);
+        seed_cache_slot(root, "being-written", 4096, now);
+
+        // Fits two of the three.
+        prune_cache_root(root, &root.join("being-written"), 10_000);
+
+        assert!(
+            !root.join("oldest").exists(),
+            "the least recently used slot is the one to go"
+        );
+        assert!(
+            root.join("being-written").exists(),
+            "the slot the caller is about to clone into must survive"
+        );
+        assert!(root.join("newer").exists(), "eviction stops once it fits");
+    }
+
+    #[test]
+    fn prune_skips_a_slot_another_install_is_holding() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        let now = std::time::SystemTime::now();
+        seed_cache_slot(root, "held", 4096, now - Duration::from_secs(86_400 * 30));
+        seed_cache_slot(root, "free", 4096, now - Duration::from_secs(86_400));
+
+        // Stand in for another install that already holds the oldest slot.
+        let held = lock_repo_cache(&root.join("held"), &None).unwrap();
+
+        prune_cache_root(root, &root.join("nothing"), 6000);
+
+        assert!(
+            root.join("held").exists(),
+            "deleting a checkout out from under a running install would break it"
+        );
+        assert!(
+            !root.join("free").exists(),
+            "eviction moves on to the next candidate instead of giving up"
+        );
+        drop(held);
     }
 }
