@@ -2530,8 +2530,19 @@ mod tests {
         // The filter is served by the *source* repo, so the switch belongs there.
         git(&source, &["config", "uploadpack.allowFilter", "true"]);
 
+        // `file://` needs forward slashes and, on Windows, a slash before the
+        // drive letter: `file:///C:/…` where unix wants `file:///tmp/…`.
+        fn file_url(path: &Path) -> String {
+            let raw = path.display().to_string().replace('\\', "/");
+            if raw.starts_with('/') {
+                format!("file://{raw}")
+            } else {
+                format!("file:///{raw}")
+            }
+        }
+
         let checkout = tmp.path().join("checkout");
-        let source_url = format!("file://{}", source.display());
+        let source_url = file_url(&source);
         let cloned = Command::new("git")
             .args(["clone", "--filter=blob:none", "--no-local", "--no-checkout"])
             .arg("--sparse")
@@ -2558,7 +2569,7 @@ mod tests {
 
         // Point origin somewhere that does not exist, so any attempt to reach it
         // is unmistakable in the error rather than quietly succeeding.
-        let gone = format!("file://{}", tmp.path().join("gone").display());
+        let gone = file_url(&tmp.path().join("gone"));
         git(&checkout, &["config", "remote.origin.url", &gone]);
 
         // Precondition, asserted rather than assumed: this really is a partial
@@ -2577,7 +2588,7 @@ mod tests {
         let after_err = String::from_utf8_lossy(&after.stderr).to_string();
         assert!(!after.status.success(), "the object is still missing");
         assert!(
-            !after_err.contains("promisor") && !after_err.contains("gone"),
+            !after_err.contains("promisor") && !after_err.contains(&gone),
             "a detached checkout must not go to the remote for a missing object, got: {after_err}"
         );
 
