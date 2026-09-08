@@ -185,10 +185,6 @@ fn prune_cache_root(root: &Path, keep: &Path, limit: u64) {
         slots.push((path, size, used));
     }
 
-    if total <= limit {
-        return;
-    }
-
     slots.sort_by_key(|(_, _, used)| *used);
     for (path, size, _) in slots {
         if total <= limit {
@@ -798,12 +794,25 @@ fn copy_cached_repo(cached: &Path, cancel: Option<&Arc<AtomicBool>>) -> Result<P
 /// gets added next — and nothing in the type system would tell them that.
 ///
 /// Dropping the config makes a missing object an immediate error instead, exactly
-/// as it has always been in a shallow full checkout. So the network-capable
-/// surface stays where it can be reviewed: the three cache commands in this file,
-/// all of which go through `run_git_watched_at`. Everything handed outside this
-/// module is provably local.
+/// as it has always been in a shallow full checkout.
+///
+/// The precise claim, because a broader one would be wrong: no git command against
+/// the returned checkout fetches an object *behind the caller's back*. An explicit
+/// `fetch`/`pull`/`ls-remote` still reaches origin, whose URL the copy keeps — no
+/// caller does that today, and one that started would be doing something visibly
+/// network-shaped. What this rules out is the invisible case, which is the one
+/// nobody would think to instrument.
 fn detach_from_promisor(repo_dir: &Path) {
-    for key in ["remote.origin.promisor", "remote.origin.partialclonefilter"] {
+    // Three keys, because git registers a promisor remote from *any* of them.
+    // `git clone --filter` writes the two `remote.origin.*` ones and, since 2.25,
+    // not `extensions.partialClone` — but leaving that one out would mean the set
+    // is complete only for the git that happens to write our caches, and getting
+    // it wrong restores lazy fetching silently.
+    for key in [
+        "remote.origin.promisor",
+        "remote.origin.partialclonefilter",
+        "extensions.partialClone",
+    ] {
         let _ = git_command()
             .arg("-C")
             .arg(repo_dir)
@@ -2344,16 +2353,18 @@ mod tests {
         // End to end, over a real partial clone: what the caller receives is not
         // one. Callers run plain git against this directory, so it has to be
         // incapable of wandering onto the network behind their back.
-        let promisor = Command::new("git")
-            .arg("-C")
-            .arg(&checkout)
-            .args(["config", "--get", "remote.origin.promisor"])
-            .output()
-            .unwrap();
-        assert!(
-            !promisor.status.success(),
-            "the install checkout must be detached from the promisor remote"
-        );
+        for key in ["remote.origin.promisor", "remote.origin.partialclonefilter"] {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&checkout)
+                .args(["config", "--get", key])
+                .output()
+                .unwrap();
+            assert!(
+                !out.status.success(),
+                "the install checkout must be detached from the promisor remote ({key})"
+            );
+        }
 
         // A second skill from the same repo reuses the cache — its objects are
         // what cost something — and re-scopes the worktree to itself.
@@ -2476,6 +2487,107 @@ mod tests {
         assert!(url.status.success());
     }
 
+    /// Pins the *outcome* rather than the config keys: a checkout that has been
+    /// detached must fail on a missing object without reaching for the remote.
+    ///
+    /// Naming the keys is not enough on its own. Git registers a promisor remote
+    /// from any of three settings, so a key set that is right for today's git and
+    /// wrong for another would leave lazy fetching switched back on with every
+    /// key-checking test still green. This one asks the question the boundary is
+    /// actually about, and needs no network to do it: the partial clone is served
+    /// over `file://` from a repo in the same temp directory.
+    #[test]
+    fn a_detached_checkout_fails_on_a_missing_object_without_reaching_the_remote() {
+        fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+            Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .expect("git must be runnable")
+        }
+
+        let tmp = tempdir().unwrap();
+        let source = tmp.path().join("source");
+        fs::create_dir_all(source.join("kept")).unwrap();
+        fs::create_dir_all(source.join("absent")).unwrap();
+        fs::write(source.join("kept/f.txt"), "kept").unwrap();
+        fs::write(source.join("absent/f.txt"), "absent").unwrap();
+        git(&source, &["init"]);
+        git(&source, &["add", "-A"]);
+        git(
+            &source,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-m",
+                "init",
+            ],
+        );
+        // The filter is served by the *source* repo, so the switch belongs there.
+        git(&source, &["config", "uploadpack.allowFilter", "true"]);
+
+        let checkout = tmp.path().join("checkout");
+        let source_url = format!("file://{}", source.display());
+        let cloned = Command::new("git")
+            .args(["clone", "--filter=blob:none", "--no-local", "--no-checkout"])
+            .arg("--sparse")
+            .arg(&source_url)
+            .arg(&checkout)
+            .output()
+            .unwrap();
+        assert!(
+            cloned.status.success(),
+            "clone failed: {}",
+            String::from_utf8_lossy(&cloned.stderr)
+        );
+        git(&checkout, &["sparse-checkout", "set", "--cone", "kept"]);
+        git(&checkout, &["checkout"]);
+        // Stand in for a git that records the promisor under `extensions` instead
+        // of, or as well as, the two `remote.origin.*` keys. Today's git writes
+        // only the latter pair, so without this line the third key in
+        // `detach_from_promisor` would be defensive code no test ever exercises —
+        // and dropping it from the list would go unnoticed.
+        git(&checkout, &["config", "extensions.partialClone", "origin"]);
+
+        let oid = git(&checkout, &["rev-parse", "HEAD:absent/f.txt"]);
+        let oid = String::from_utf8_lossy(&oid.stdout).trim().to_string();
+
+        // Point origin somewhere that does not exist, so any attempt to reach it
+        // is unmistakable in the error rather than quietly succeeding.
+        let gone = format!("file://{}", tmp.path().join("gone").display());
+        git(&checkout, &["config", "remote.origin.url", &gone]);
+
+        // Precondition, asserted rather than assumed: this really is a partial
+        // clone with that object missing. Without it the test could pass on a git
+        // that ignored the filter and fetched everything.
+        let before = git(&checkout, &["cat-file", "-s", &oid]);
+        let before_err = String::from_utf8_lossy(&before.stderr).to_string();
+        assert!(
+            !before.status.success() && before_err.contains("promisor"),
+            "setup must produce a genuine partial clone, got: {before_err}"
+        );
+
+        detach_from_promisor(&checkout);
+
+        let after = git(&checkout, &["cat-file", "-s", &oid]);
+        let after_err = String::from_utf8_lossy(&after.stderr).to_string();
+        assert!(!after.status.success(), "the object is still missing");
+        assert!(
+            !after_err.contains("promisor") && !after_err.contains("gone"),
+            "a detached checkout must not go to the remote for a missing object, got: {after_err}"
+        );
+
+        // And the objects it does have are still readable.
+        assert_eq!(
+            fs::read_to_string(checkout.join("kept/f.txt")).unwrap(),
+            "kept"
+        );
+    }
+
     // ── cache prune ──
 
     /// Writes the marker deep inside the slot, the way git writes fetched objects,
@@ -2542,22 +2654,27 @@ mod tests {
 
         let now = std::time::SystemTime::now();
         let day = Duration::from_secs(86_400);
-        seed_cache_slot(root, "oldest", 4096, now - day * 30);
-        seed_cache_slot(root, "newer", 4096, now - day);
-        seed_cache_slot(root, "being-written", 4096, now);
+        // `being-written` is deliberately the *least* recently used slot. If it
+        // were the newest, plain LRU would spare it anyway and the guard could be
+        // deleted with every assertion still green — which is exactly how the
+        // first version of this test proved nothing.
+        seed_cache_slot(root, "being-written", 4096, now - day * 30);
+        seed_cache_slot(root, "middle", 4096, now - day);
+        seed_cache_slot(root, "newest", 4096, now);
 
         // Fits two of the three.
         prune_cache_root(root, &root.join("being-written"), 10_000);
 
         assert!(
-            !root.join("oldest").exists(),
-            "the least recently used slot is the one to go"
+            root.join("being-written").exists(),
+            "the slot the caller is about to clone into must survive, even as the \
+             least recently used one"
         );
         assert!(
-            root.join("being-written").exists(),
-            "the slot the caller is about to clone into must survive"
+            !root.join("middle").exists(),
+            "eviction moves past the protected slot to the next oldest"
         );
-        assert!(root.join("newer").exists(), "eviction stops once it fits");
+        assert!(root.join("newest").exists(), "eviction stops once it fits");
     }
 
     #[test]
